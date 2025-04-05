@@ -8,6 +8,7 @@ import { authApi } from "./api/auth";
 import { protectedApi } from "./api/protected";
 import { userApi } from "./api/protected/user";
 import { configApi } from "./api/config";
+import { chatApi } from "./api/chat";
 
 // Get environment variables from Pulumi config
 const config = new pulumi.Config();
@@ -16,6 +17,7 @@ const workosClientId = config.requireSecret("workosClientId");
 const workosPassword = config.requireSecret("workosPassword");
 const frontendUrl = config.require("frontendUrl");
 const redirectUri = config.require("redirectUri");
+const fireworksApiKey = config.requireSecret("fireworksApiKey");
 
 // Common environment variables for all Lambda functions
 const lambdaEnv = {
@@ -25,6 +27,7 @@ const lambdaEnv = {
     WORKOS_COOKIE_PASSWORD: workosPassword,
     FRONTEND_URL: frontendUrl,
     REDIRECT_URI: redirectUri,
+    FIREWORKS_API_KEY: fireworksApiKey,
   }
 };
 
@@ -76,6 +79,25 @@ const api = new awsx.classic.apigateway.API("horizon-api", {
       method: "GET",
       eventHandler: new aws.lambda.CallbackFunction("user-profile-handler", {
         callback: userApi.getProfile,
+        environment: lambdaEnv,
+      }),
+    },
+    // Chat endpoints
+    {
+      path: "/chat",
+      method: "POST",
+      eventHandler: new aws.lambda.CallbackFunction("chat-handler", {
+        callback: chatApi.chat,
+        environment: lambdaEnv,
+        timeout: 60, // Longer timeout for streaming responses
+        memorySize: 512, // More memory for processing chat requests
+      }),
+    },
+    {
+      path: "/chat/tool",
+      method: "POST",
+      eventHandler: new aws.lambda.CallbackFunction("tool-execution-handler", {
+        callback: chatApi.executeTool,
         environment: lambdaEnv,
       }),
     },
