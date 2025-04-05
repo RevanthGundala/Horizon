@@ -1,0 +1,27 @@
+{
+  "name": "infrastructure",
+  "version": "1.0.0",
+  "main": "bin/index.js",
+  "scripts": {
+    "build": "tsc",
+    "deploy": "pulumi up",
+    "destroy": "pulumi destroy",
+    "preview": "pulumi preview",
+    "dev": "tsc -w",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "update-env": "node update-env.js",
+    "deploy-and-update": "npm run deploy && npm run update-env"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Infrastructure as code for Horizon application using AWS Lambda functions",
+  "dependencies": {
+    "@pulumi/aws": "^6.0.0",
+    "@pulumi/awsx": "^2.0.0",
+    "@pulumi/pulumi": "^3.0.0",
+    "@types/node": "^20.0.0",
+    "pulumi": "^0.0.1",
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,0 +1,61 @@
+.App {
+  text-align: center;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.App-header {
+  padding: 1rem 0;
+  margin-bottom: 1rem;
+}
+
+.editor-container {
+  flex: 1;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+  background-color: white;
+  margin-bottom: 2rem;
+  /* Set a specific height for the editor container */
+  min-height: 500px;
+  /* Ensure the editor takes up all available space */
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-container > div {
+  /* Make the BlockNote editor fill the container */
+  flex: 1;
+  height: 100%;
+}
+
+.App-footer {
+  margin-top: auto;
+  padding: 1rem 0;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
