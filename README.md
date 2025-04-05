@@ -50,3 +50,4 @@ This will create a packaged application in the `/release` directory.
 - `npm run electron:start` - Start Electron with the built application
 - `npm run electron:package` - Package the application for distribution
 # Horizon
+# Horizon
