@@ -22,6 +22,7 @@ Pulumi.*.yaml
 .env.development.local
 .env.test.local
 .env.production.local
+.env.development
 
 # AWS credentials
 .aws/
