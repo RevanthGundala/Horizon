@@ -2,6 +2,17 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { withAuth } from "../middleware/auth";
 import { Client } from "pg";
 
+// Helper function to create consistent headers
+function createHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "http://localhost:5173",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Amz-Date, X-Api-Key, X-Amz-Security-Token",
+    "Access-Control-Allow-Credentials": "true"
+  };
+}
+
 // Handler that returns user data (protected by auth)
 const userHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
   try {

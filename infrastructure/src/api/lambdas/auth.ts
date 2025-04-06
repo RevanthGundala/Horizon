@@ -4,15 +4,15 @@ import { WorkOS } from "@workos-inc/node";
 import { Client } from "pg";
 import { parseCookies } from "../middleware/auth";
 
-const workos = new WorkOS(process.env.WORKOS_API_KEY || "", {
-  clientId: process.env.WORKOS_CLIENT_ID || "",
+const workos = new WorkOS(process.env.workosApiKey, {
+  clientId: process.env.workosClientId,
 });
 
 // Helper function to create consistent headers
 const createHeaders = () => {
   return {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "http://localhost:5173",
+    "Access-Control-Allow-Origin": process.env.frontendUrl,
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Amz-Date, X-Api-Key, X-Amz-Security-Token",
     "Access-Control-Allow-Credentials": "true"
@@ -25,8 +25,8 @@ const loginHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProx
     provider: 'authkit',
 
     // The callback endpoint that WorkOS will redirect to after a user authenticates
-    redirectUri: `${process.env.FRONTEND_URL || "http://localhost:5173"}/callback`,
-    clientId: process.env.WORKOS_CLIENT_ID || "",
+    redirectUri: `${process.env.frontendUrl}/callback`,
+    clientId: process.env.workosClientId || "",
   });
 
   // Redirect the user to the AuthKit sign-in page
@@ -54,16 +54,16 @@ const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayP
   try {
     const { user } = await workos.userManagement.authenticateWithCode({
       code,
-      clientId: process.env.WORKOS_CLIENT_ID || "",
+      clientId: process.env.workosClientId,
     });
 
     // Connect to the database
     const client = new Client({
-      host: process.env.DB_HOST,
+      host: process.env.dbHost,
       port: 5432,
-      database: process.env.DB_NAME || "horizon",
-      user: process.env.DB_USER || "postgres",
-      password: process.env.DB_PASSWORD,
+      database: process.env.dbName || "horizon",
+      user: process.env.dbUser || "postgres",
+      password: process.env.dbPassword,
     });
 
     await client.connect();
@@ -76,10 +76,15 @@ const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayP
       );
 
       if (existingUser.rows.length === 0) {
+        // Fix: Properly concatenate first and last name, handling null/undefined cases
+        const firstName = user.firstName || '';
+        const lastName = user.lastName || '';
+        const fullName = [firstName, lastName].filter(Boolean).join(' ');
+        
         // Add the user to our users db in RDS
         await client.query(
           "INSERT INTO users (id, email, name, created_at) VALUES ($1, $2, $3, NOW())",
-          [user.id, user.email, user.firstName || "", user.lastName || ""]
+          [user.id, user.email, fullName]
         );
         console.log(`Created new user: ${user.email}`);
       } else {
@@ -94,7 +99,9 @@ const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayP
     return {
       statusCode: 302,
       headers: {
-        Location: `${process.env.FRONTEND_URL || "http://localhost:5173"}`,
+        Location: `${process.env.frontendUrl}`,
+        // Set authentication cookie if needed
+        "Set-Cookie": `wos-session=${sessionData}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`,
       },
       body: '',
     };
@@ -109,26 +116,43 @@ const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayP
 };
 
 const logoutHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const cookies = parseCookies(event.headers.cookie);
-  const sessionData = cookies["wos-session"] || "";
+  try {
+    const cookies = parseCookies(event.headers.cookie || '');
+    const sessionData = cookies["wos-session"] || "";
+    
+    if (!sessionData) {
+      return {
+        statusCode: 400,
+        headers: createHeaders(),
+        body: JSON.stringify({ error: "No active session" }),
+      };
+    }
 
-  const session = workos.userManagement.loadSealedSession({
-    sessionData,
-    cookiePassword: process.env.WORKOS_COOKIE_PASSWORD || "",
-  });
+    // Fix: Properly handle the session and get logout URL
+    const session = await workos.userManagement.loadSealedSession({
+      sessionData,
+      cookiePassword: process.env.workosCookiePassword || '',
+    });
 
-  const url = await session.getLogoutUrl();
+    const url = await session.getLogoutUrl();
 
-  // Instead of using res.clearCookie, set an expired cookie in the response headers
-  return {
-    statusCode: 302,
-    headers: {
-      Location: url,
-      "Set-Cookie": "wos-session=; Path=/; HttpOnly; Secure; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-      ...createHeaders()
-    },
-    body: '',
-  };
+    return {
+      statusCode: 302,
+      headers: {
+        Location: url,
+        "Set-Cookie": "wos-session=; Path=/; HttpOnly; Secure; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+        ...createHeaders()
+      },
+      body: '',
+    };
+  } catch (error) {
+    console.error("Logout error:", error);
+    return {
+      statusCode: 500,
+      headers: createHeaders(),
+      body: JSON.stringify({ error: "Logout failed" }),
+    };
+  }
 };
 
 export const authApi = {

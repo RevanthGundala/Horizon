@@ -33,9 +33,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
-    queryKey: ['me'],
+    queryKey: ['auth'],
     queryFn: async (): Promise<User | null> => {
-      const res = await fetch('/api/auth/me', {
+      const res = await fetch('/api/auth', {
         credentials: 'include',
       });
       if (!res.ok) {
@@ -54,7 +54,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const logout = useCallback(async () => {
     await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
-    await queryClient.invalidateQueries({ queryKey: ['me'] });
+    await queryClient.invalidateQueries({ queryKey: ['auth'] });
   }, [queryClient]);
 
   const value = useMemo(

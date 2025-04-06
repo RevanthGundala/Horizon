@@ -7,12 +7,22 @@ import { useCreateBlockNote } from "@blocknote/react";
 import SearchBar from './components/SearchBar';
 import ChatInterface from './components/ChatInterface';
 import { chatService } from './services/ChatService';
+import CardGrid, { Card } from './components/CardGrid';
+import { useNavigate } from '@tanstack/react-router';
 
 function App() {
   const [searchResult, setSearchResult] = useState<string | null>(null);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [isSearchLoading, setIsSearchLoading] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [cards, setCards] = useState<Card[]>([
+    { id: '1', title: 'Getting Started', description: 'Welcome to Horizon! This is your first page.', lastEdited: 'just now' },
+    { id: '2', title: 'Project Ideas', description: 'Brainstorming session for new projects', lastEdited: '2 days ago' },
+    { id: '3', title: 'Meeting Notes', description: 'Notes from team meetings', lastEdited: '1 week ago' },
+    { id: '4', title: 'Research', description: 'Research findings and resources', lastEdited: '3 days ago' },
+  ]);
+  
+  const navigate = useNavigate();
 
   // Handle search submission
   const handleSearchSubmit = async (query: string) => {
@@ -60,17 +70,33 @@ function App() {
     }
   };
 
+  // Handle creating a new card
+  const handleCreateCard = () => {
+    const newId = (Math.max(...cards.map(card => parseInt(card.id))) + 1).toString();
+    const newCard = {
+      id: newId,
+      title: 'Untitled',
+      description: 'Click to edit',
+      lastEdited: 'just now',
+    };
+    
+    setCards([...cards, newCard]);
+    
+    // Navigate to the new page
+    navigate({ to: '/page/$pageId', params: { pageId: newId } });
+  };
 
   return (
-      <div className="App">
+      <div className="app-page">
         <div className={`app-content ${isSearchFocused ? 'dimmed' : ''}`}>
           <header className="App-header">
-            <h1>Horizon</h1>
-            <p>An Electron.js application with Vite, React, and TypeScript</p>
+            <h2>Welcome to Horizon</h2>
+            <p>Your canvas for ideas and knowledge</p>
           </header>
           
-          <main className="editor-container">
-            {/* Editor component */}
+          <main className="home-container">
+            <CardGrid cards={cards} onCreateCard={handleCreateCard} />
+            
             {/* Display search results if available */}
             {searchResult && (
               <div className="search-results">

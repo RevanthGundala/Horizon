@@ -80,7 +80,7 @@ const Sidebar: React.FC = () => {
     children 
   }) => {
     // Only use Link for defined routes
-    if (to === '/' || to === '/profile' || to === '/login' || to === '/auth/callback') {
+    if (to === '/' || to.startsWith('/page/')) {
       return <Link to={to} className={className}>{children}</Link>;
     }
     // Use anchor tag for other routes

@@ -1,6 +1,5 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { createHeaders } from "./utils/auth-utils";
-import { withAuth } from "../middleware/auth";
+import { createHeaders, withAuth } from "../middleware/auth";
 import { createFireworksStream, streamToString } from "../utils/stream";
 import { availableTools, toolRegistry } from "../tools";
 
@@ -49,7 +48,6 @@ interface FireworksPayload {
  */
 export const chatHandler = withAuth(
   async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
-    // Handle OPTIONS request for CORS preflight
     if (event.httpMethod === 'OPTIONS') {
       return {
         statusCode: 200,
@@ -123,21 +121,26 @@ export const chatHandler = withAuth(
         };
       } else {
         // For non-streaming responses
-        const response = await axios.post(
+        const response = await fetch(
           'https://api.fireworks.ai/inference/v1/chat/completions',
-          payload,
           {
+            method: 'POST',
             headers: {
               'Authorization': `Bearer ${fireworksApiKey}`,
               'Content-Type': 'application/json',
             },
+            body: JSON.stringify(payload)
           }
         );
+
+        if (!response.ok) {
+          throw new Error(`Fireworks API error: ${response.status} ${response.statusText}`);
+        }
 
         return {
           statusCode: 200,
           headers: createHeaders(),
-          body: JSON.stringify(response.data),
+          body: JSON.stringify(await response.json()),
         };
       }
     } catch (error) {
