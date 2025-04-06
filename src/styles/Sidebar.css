@@ -1,0 +1,269 @@
+.sidebar {
+  width: 250px;
+  height: 100vh;
+  background-color: #f7f7f7;
+  border-right: 1px solid #e0e0e0;
+  display: flex;
+  flex-direction: column;
+  color: #333;
+  font-size: 14px;
+  overflow-y: auto;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.team-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.team-avatar {
+  width: 24px;
+  height: 24px;
+  background-color: #0066ff;
+  color: white;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+}
+
+.team-name {
+  font-weight: 500;
+}
+
+.sidebar-menu-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #666;
+  font-size: 16px;
+  padding: 4px;
+}
+
+.sidebar-search {
+  padding: 12px 16px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.sidebar-search input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background-color: #fff;
+  font-size: 14px;
+}
+
+.sidebar-nav {
+  padding: 12px 0;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  color: #333;
+  text-decoration: none;
+  transition: background-color 0.2s;
+}
+
+.nav-item:hover {
+  background-color: #eaeaea;
+}
+
+.sidebar-section {
+  padding: 12px 0;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.section-header {
+  padding: 0 16px 8px;
+  font-size: 12px;
+  color: #666;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+.teamspace-item {
+  margin-bottom: 2px;
+}
+
+.teamspace-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.teamspace-header:hover {
+  background-color: #eaeaea;
+}
+
+.teamspace-icon {
+  margin-right: 8px;
+  font-size: 16px;
+  width: 18px;
+  display: inline-block;
+  text-align: center;
+}
+
+.teamspace-name {
+  flex: 1;
+}
+
+.teamspace-toggle {
+  font-size: 10px;
+  color: #666;
+}
+
+.teamspace-subitems {
+  padding-left: 16px;
+}
+
+.teamspace-subitem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  color: #333;
+  text-decoration: none;
+  transition: background-color 0.2s;
+}
+
+.teamspace-subitem:hover {
+  background-color: #eaeaea;
+}
+
+.subitem-icon {
+  width: 18px;
+  display: inline-block;
+  text-align: center;
+}
+
+.all-teamspaces {
+  margin-top: 8px;
+}
+
+.teamspace-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  color: #666;
+  text-decoration: none;
+  transition: background-color 0.2s;
+}
+
+.teamspace-link:hover {
+  background-color: #eaeaea;
+}
+
+.sidebar-footer {
+  padding: 12px 0;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.footer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  color: #333;
+  text-decoration: none;
+  transition: background-color 0.2s;
+}
+
+.footer-item:hover {
+  background-color: #eaeaea;
+}
+
+.footer-icon {
+  width: 18px;
+  display: inline-block;
+  text-align: center;
+}
+
+.footer-text {
+  flex: 1;
+}
+
+.external-link {
+  font-size: 12px;
+  color: #666;
+}
+
+.sidebar-trial {
+  margin-top: auto;
+  padding: 16px;
+  background-color: #f0f0f0;
+  border-top: 1px solid #e0e0e0;
+}
+
+.trial-title {
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.trial-expiry {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 12px;
+}
+
+.manage-plan-button {
+  width: 100%;
+  padding: 8px;
+  background-color: #fff;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  color: #333;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.manage-plan-button:hover {
+  background-color: #f0f0f0;
+}
+
+.sidebar-loading {
+  padding: 20px;
+  text-align: center;
+  color: #666;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+}
+
+.sidebar-loading p {
+  margin-bottom: 15px;
+}
+
+.retry-button {
+  background-color: #0066ff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.retry-button:hover {
+  background-color: #0055dd;
+}

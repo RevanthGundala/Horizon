@@ -4,7 +4,21 @@ import { resolve } from 'path';
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: 'spa-fallback',
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          // If the request is for a file that doesn't exist, serve index.html
+          if (req.url?.startsWith('/auth/callback') || req.url?.startsWith('/login')) {
+            req.url = '/';
+          }
+          next();
+        });
+      }
+    }
+  ],
   resolve: {
     alias: {
       '@': resolve(__dirname, './src')
@@ -42,6 +56,12 @@ export default defineConfig({
         secure: true,
         rewrite: (path) => path,
       },
-    },
-  },
+      '/chat': {
+        target: 'https://o97b3832ba.execute-api.us-west-2.amazonaws.com/stage',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path,
+      },
+    }
+  }
 });

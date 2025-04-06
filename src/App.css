@@ -1,11 +1,24 @@
 .App {
-  text-align: center;
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.app-content {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  padding: 2rem;
+  transition: opacity 0.8s cubic-bezier(0.19, 1, 0.22, 1);
+  text-align: center;
+}
+
+.app-content.dimmed {
+  opacity: 0.2;
+  pointer-events: none;
 }
 
 .App-header {
@@ -58,4 +71,65 @@
 
 .read-the-docs {
   color: #888;
+}
+
+/* Search Results Styling */
+.search-results {
+  margin-top: 20px;
+  padding: 16px;
+  background-color: #f9f9f9;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  text-align: left;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.search-results h3 {
+  margin-top: 0;
+  color: #333;
+  font-size: 18px;
+  border-bottom: 1px solid #e0e0e0;
+  padding-bottom: 8px;
+}
+
+.search-results p {
+  margin: 8px 0;
+  color: #555;
+  line-height: 1.5;
+}
+
+/* Sidebar Loading State */
+.sidebar-loading {
+  padding: 20px;
+  text-align: center;
+  color: #666;
+}
+
+/* Add Page Button */
+.add-page-button {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  margin-left: auto;
+}
+
+.add-page-button:hover {
+  color: #333;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+}
+
+/* Loading Pages Indicator */
+.loading-pages {
+  padding: 10px 16px;
+  color: #666;
+  font-style: italic;
+  font-size: 13px;
 }

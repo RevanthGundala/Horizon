@@ -6,25 +6,30 @@ import {
   Link
 } from '@tanstack/react-router';
 import App from './App';
-import UserProfile from './components/UserProfile';
-import Login from './components/Login';
-import AuthCallback from './components/AuthCallback';
+import Sidebar from './components/Sidebar';
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { AuthProvider } from './contexts/auth-context';
 
 // Define search param interfaces
 interface CallbackSearchParams {
   code: string;
 }
 
+const queryClient = new QueryClient();
+
 // Root route
 export const rootRoute = createRootRoute({
   component: () => (
-    <>
-      <div className="navbar">
-        <Link to="/" className="nav-link">Home</Link>
-        <Link to="/profile" className="nav-link">Profile</Link>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+      <div className="app-container">
+        <Sidebar />
+        <div className="main-content">
+          <Outlet />
+        </div>
       </div>
-      <Outlet />
-    </>
+      </AuthProvider>
+    </QueryClientProvider>
   ),
 });
 
@@ -35,37 +40,10 @@ export const indexRoute = createRoute({
   component: App,
 });
 
-export const profileRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/profile',
-  component: UserProfile,
-});
-
-export const loginRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/login',
-  component: Login,
-});
-
-export const callbackRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/auth/callback',
-  validateSearch: (search: Record<string, unknown>): CallbackSearchParams => {
-    // Validate and transform search parameters
-    return {
-      code: search.code as string,
-    };
-  },
-  component: AuthCallback,
-});
-
 // Create the router
 export const router = createRouter({
   routeTree: rootRoute.addChildren([
     indexRoute,
-    profileRoute,
-    loginRoute,
-    callbackRoute,
   ]),
 });
 

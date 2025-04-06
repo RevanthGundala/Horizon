@@ -1,10 +1,8 @@
-import * as aws from "@pulumi/aws";
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { createHeaders } from "./utils/auth-utils";
-import { withAuth } from "./middleware/auth";
-import axios from "axios";
-import { createFireworksStream, streamToString } from "./utils/stream-utils";
-import { availableTools, toolRegistry } from "./tools";
+import { withAuth } from "../middleware/auth";
+import { createFireworksStream, streamToString } from "../utils/stream";
+import { availableTools, toolRegistry } from "../tools";
 
 // Define the interface for the chat request
 interface ChatRequest {

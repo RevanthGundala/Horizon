@@ -23,5 +23,8 @@
     "@types/node": "^20.0.0",
     "pulumi": "^0.0.1",
     "typescript": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.148"
   }
 }
