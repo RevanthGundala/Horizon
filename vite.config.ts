@@ -32,36 +32,22 @@ export default defineConfig({
   server: {
     proxy: {
       // Proxy API requests to the AWS API Gateway during development
-      '/config': {
-        target: 'https://o97b3832ba.execute-api.us-west-2.amazonaws.com/stage',
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path.replace(/^\/config/, '/config'),
-      },
-      '/auth': {
-        target: 'https://o97b3832ba.execute-api.us-west-2.amazonaws.com/stage',
+      '/api': {
+        target: 'https://vihy6489c7.execute-api.us-west-2.amazonaws.com/stage',
         changeOrigin: true,
         secure: true,
         rewrite: (path) => path,
-      },
-      '/user': {
-        target: 'https://o97b3832ba.execute-api.us-west-2.amazonaws.com/stage',
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path,
-      },
-      '/protected': {
-        target: 'https://o97b3832ba.execute-api.us-west-2.amazonaws.com/stage',
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path,
-      },
-      '/chat': {
-        target: 'https://o97b3832ba.execute-api.us-west-2.amazonaws.com/stage',
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path,
-      },
+        configure: (proxy) => {
+          proxy.on('proxyReq', function(proxyReq, req, res, options) {
+            // Log cookies being sent to the backend
+            console.log('Cookies sent to backend:', req.headers.cookie);
+          });
+          proxy.on('proxyRes', function(proxyRes, req, res) {
+            // Log cookies coming back from the backend
+            console.log('Cookies from backend:', proxyRes.headers['set-cookie']);
+          });
+        }
+      }
     }
   }
 });

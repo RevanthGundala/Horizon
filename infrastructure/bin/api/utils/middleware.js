@@ -44,9 +44,8 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.refreshSession = exports.loadAndAuthenticateSession = exports.parseCookies = exports.createClearCookie = exports.createSessionCookie = exports.withAuth = exports.handleOptions = exports.createHeaders = void 0;
 exports.isAuthSuccess = isAuthSuccess;
+const node_1 = require("@workos-inc/node");
 const cookie = __importStar(require("cookie"));
-const workos_stub_1 = require("../utils/workos-stub");
-const WorkOS = (0, workos_stub_1.getWorkOSClient)();
 const createHeaders = (origin) => {
     // Get the frontend URL from environment variables
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
@@ -54,7 +53,7 @@ const createHeaders = (origin) => {
     const allowOrigin = origin || frontendUrl;
     return {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": allowOrigin,
         "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Amz-Date, X-Api-Key, X-Amz-Security-Token",
         "Access-Control-Allow-Credentials": "true"
@@ -180,8 +179,8 @@ const loadAndAuthenticateSession = (sessionData) => __awaiter(void 0, void 0, vo
         throw new Error("WORKOS_COOKIE_PASSWORD environment variable is not set.");
     }
     try {
-        const workos = new WorkOS("sk_test_a2V5XzAxSlIxSzVOMVM5OEVWUjhXV1NYOUJQWVhTLG5sdjlhTUZSS0w4MHZyOEhkVXZtemc1Y2M", {
-            clientId: process.env.workosClientId,
+        const workos = new node_1.WorkOS(process.env.WORKOS_API_KEY || "", {
+            clientId: process.env.WORKOS_CLIENT_ID || "",
         });
         const session = workos.userManagement.loadSealedSession({
             sessionData,
@@ -199,8 +198,8 @@ const refreshSession = (sessionData) => __awaiter(void 0, void 0, void 0, functi
         throw new Error("WORKOS_COOKIE_PASSWORD environment variable is not set.");
     }
     try {
-        const workos = new WorkOS("sk_test_a2V5XzAxSlIxSzVOMVM5OEVWUjhXV1NYOUJQWVhTLG5sdjlhTUZSS0w4MHZyOEhkVXZtemc1Y2M", {
-            clientId: process.env.workosClientId,
+        const workos = new node_1.WorkOS(process.env.WORKOS_API_KEY || "", {
+            clientId: process.env.WORKOS_CLIENT_ID || "",
         });
         const session = workos.userManagement.loadSealedSession({
             sessionData,
@@ -211,4 +210,4 @@ const refreshSession = (sessionData) => __awaiter(void 0, void 0, void 0, functi
     catch (error) { /* ... */ }
 });
 exports.refreshSession = refreshSession;
-//# sourceMappingURL=auth.js.map
+//# sourceMappingURL=middleware.js.map

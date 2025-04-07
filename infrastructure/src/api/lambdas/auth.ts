@@ -1,92 +1,114 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import * as aws from "@pulumi/aws";
-import { WorkOS } from "@workos-inc/node";
 import { Client } from "pg";
-import { parseCookies } from "../middleware/auth";
-
-const workos = new WorkOS(process.env.workosApiKey, {
-  clientId: process.env.workosClientId,
-});
-
-// Helper function to create consistent headers
-const createHeaders = () => {
-  return {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": process.env.frontendUrl,
-    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Amz-Date, X-Api-Key, X-Amz-Security-Token",
-    "Access-Control-Allow-Credentials": "true"
-  };
-};
+import { parseCookies, createHeaders, handleOptions, loadAndAuthenticateSession } from "../utils/middleware";
+import { WorkOS } from "@workos-inc/node";
 
 const loginHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const authorizationUrl = workos.userManagement.getAuthorizationUrl({
-    // Specify that we'd like AuthKit to handle the authentication flow
-    provider: 'authkit',
+  // Handle OPTIONS requests for CORS preflight
+  if (event.httpMethod === "OPTIONS") {
+    return handleOptions(event);
+  }
+  
+  const clientId = process.env.WORKOS_CLIENT_ID || "";
+  
+  try {
+    const workos = new WorkOS(process.env.WORKOS_API_KEY || "", {
+      clientId,
+    });
+    
+    // Create the authorization URL
+    const authorizationUrl = workos.userManagement.getAuthorizationUrl({
+      // Specify that we'd like AuthKit to handle the authentication flow
+      provider: 'authkit',
+      // The callback endpoint that WorkOS will redirect to after a user authenticates
+      redirectUri: `${process.env.API_URL}/api/auth/callback`,
+      clientId,
+    });
+    
+    console.log('Authorization URL:', authorizationUrl);
 
-    // The callback endpoint that WorkOS will redirect to after a user authenticates
-    redirectUri: `${process.env.frontendUrl}/callback`,
-    clientId: process.env.workosClientId || "",
-  });
-
-  // Redirect the user to the AuthKit sign-in page
-  return {
-    statusCode: 302,
-    headers: {
-      Location: authorizationUrl,
-    },
-    body: '',
-  };
+    return {
+      statusCode: 302,
+      headers: {
+        "Location": authorizationUrl,
+        "Access-Control-Allow-Origin": "*",
+      },
+      body: ""
+    }; 
+  } catch (error) {
+    console.error('Error generating authorization URL:', error);
+    return {
+      statusCode: 500,
+      headers: createHeaders(),
+      body: JSON.stringify({ 
+        error: 'Failed to generate authorization URL',
+        details: error instanceof Error ? error.message : String(error)
+      }),
+    };
+  }
 };
 
 const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  // Handle OPTIONS requests for CORS preflight
+  if (event.httpMethod === "OPTIONS") {
+    return handleOptions(event);
+  }
+
+  // Get the origin from the request headers
+  const origin = event.headers.origin || event.headers.Origin;
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
 
   const code = event.queryStringParameters?.code;
+  const clientId = process.env.WORKOS_CLIENT_ID || "";
 
   if (!code) {
     return {
       statusCode: 400,
-      headers: createHeaders(), 
+      headers: createHeaders(origin), 
       body: JSON.stringify({ error: "No code provided" }),
     };
   }
 
   try {
-    const { user } = await workos.userManagement.authenticateWithCode({
+    const workos = new WorkOS(process.env.WORKOS_API_KEY || "", {
+      clientId,
+    }); 
+    const { user, sealedSession } = await workos.userManagement.authenticateWithCode({
       code,
-      clientId: process.env.workosClientId,
+      clientId,
+      session: {
+        sealSession: true,
+        cookiePassword: process.env.WORKOS_COOKIE_PASSWORD || "",
+      }
     });
+
+    console.log("WorkOS user:", user);
 
     // Connect to the database
     const client = new Client({
-      host: process.env.dbHost,
-      port: 5432,
-      database: process.env.dbName || "horizon",
-      user: process.env.dbUser || "postgres",
-      password: process.env.dbPassword,
+      connectionString: process.env.DB_URL,
+      ssl: {
+        rejectUnauthorized: false
+      }
     });
 
     await client.connect();
 
     try {
-      // Check if user already exists
+      // Check if user already exists by email
       const existingUser = await client.query(
         "SELECT * FROM users WHERE email = $1",
         [user.email]
       );
-
+      
       if (existingUser.rows.length === 0) {
-        // Fix: Properly concatenate first and last name, handling null/undefined cases
-        const firstName = user.firstName || '';
-        const lastName = user.lastName || '';
-        const fullName = [firstName, lastName].filter(Boolean).join(' ');
-        
-        // Add the user to our users db in RDS
+        // Insert the user with the WorkOS ID
         await client.query(
-          "INSERT INTO users (id, email, name, created_at) VALUES ($1, $2, $3, NOW())",
-          [user.id, user.email, fullName]
+          "INSERT INTO users (id, email) VALUES ($1, $2)",
+          [user.id, user.email]
         );
-        console.log(`Created new user: ${user.email}`);
+        console.log(`Created new user: ${user.email} with ID: ${user.id}`);
       } else {
         console.log(`User already exists: ${user.email}`);
       }
@@ -95,68 +117,141 @@ const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayP
       await client.end();
     }
 
+    // Get the domain from the API URL
+    const apiUrl = process.env.API_URL || "";
+    const domain = apiUrl ? apiUrl.split('://').pop()?.split('/')[0] : "";
+    
     // Redirect the user to the homepage
     return {
       statusCode: 302,
       headers: {
-        Location: `${process.env.frontendUrl}`,
-        // Set authentication cookie if needed
-        "Set-Cookie": `wos-session=${sessionData}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`,
+        "Location": frontendUrl,
+        "Set-Cookie": `wos-session=${sealedSession}; HttpOnly; Path=/; SameSite=None; Secure${domain ? `; Domain=${domain}` : ''}`,
+        "Access-Control-Allow-Origin": origin || frontendUrl,
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Expose-Headers": "Set-Cookie",
       },
-      body: '',
+      body: "",
     };
   } catch (error) {
-    console.error("Authentication error:", error);
+    console.error('Authentication error:', error);
+    // Get the origin here to avoid closure issues
+    const origin = event.headers.origin || event.headers.Origin;
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    
+    return {
+      statusCode: 302,
+      headers: {
+        "Location": `${frontendUrl}/login?error=authentication_failed`,
+        "Access-Control-Allow-Origin": origin || frontendUrl,
+        "Access-Control-Allow-Credentials": "true",
+      },
+      body: "",
+    };
+  }
+};
+
+const meHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  // This handler is wrapped by withAuth middleware, so if we get here, the user is authenticated
+  try {
+    // Get the session cookie
+    const cookies = parseCookies(event.headers.cookie || event.headers.Cookie);
+    const sessionData = cookies["wos-session"] || "";
+
+    console.log("Session data:", sessionData);
+    
+    if (!sessionData) {
+      return {
+        statusCode: 401,
+        headers: createHeaders(event.headers.origin || event.headers.Origin),
+        body: JSON.stringify({ 
+          authenticated: false,
+          error: "No session cookie found"
+        }),
+      };
+    }
+    
+    // Load and authenticate the session
+    const authResult = await loadAndAuthenticateSession(sessionData);
+
+    console.log("Auth result:", authResult);
+    
+    if (!authResult || !authResult.user || !authResult.user.id) {
+      return {
+        statusCode: 401,
+        headers: createHeaders(event.headers.origin || event.headers.Origin),
+        body: JSON.stringify({ 
+          authenticated: false,
+          error: "Invalid session"
+        }),
+      };
+    }
+
+    console.log("Authenticated user:", authResult.user);
+    
+    return {
+      statusCode: 200,
+      headers: createHeaders(event.headers.origin || event.headers.Origin),
+      body: JSON.stringify({ 
+        userId: authResult.user.id
+      }),
+    };
+  } catch (error) {
+    console.error("Error in me handler:", error);
     return {
       statusCode: 500,
-      headers: createHeaders(),
-      body: JSON.stringify({ error: "Authentication failed" }),
+      headers: createHeaders(event.headers.origin || event.headers.Origin),
+      body: JSON.stringify({ 
+        authenticated: false,
+        error: "Server error"
+      }),
     };
   }
 };
 
 const logoutHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  try {
-    const cookies = parseCookies(event.headers.cookie || '');
-    const sessionData = cookies["wos-session"] || "";
-    
-    if (!sessionData) {
-      return {
-        statusCode: 400,
-        headers: createHeaders(),
-        body: JSON.stringify({ error: "No active session" }),
-      };
-    }
-
-    // Fix: Properly handle the session and get logout URL
-    const session = await workos.userManagement.loadSealedSession({
-      sessionData,
-      cookiePassword: process.env.workosCookiePassword || '',
-    });
-
-    const url = await session.getLogoutUrl();
-
-    return {
-      statusCode: 302,
-      headers: {
-        Location: url,
-        "Set-Cookie": "wos-session=; Path=/; HttpOnly; Secure; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-        ...createHeaders()
-      },
-      body: '',
-    };
-  } catch (error) {
-    console.error("Logout error:", error);
-    return {
-      statusCode: 500,
-      headers: createHeaders(),
-      body: JSON.stringify({ error: "Logout failed" }),
-    };
+  // Handle OPTIONS requests for CORS preflight
+  if (event.httpMethod === "OPTIONS") {
+    return handleOptions(event);
   }
+
+  // Get the origin and frontend URL
+  const origin = event.headers.origin || event.headers.Origin;
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+  const apiUrl = process.env.API_URL || "";
+  
+  // Extract domain from API URL if available
+  const apiDomain = apiUrl ? apiUrl.split('://').pop()?.split('/')[0] : "";
+
+  console.log("Logout request received, origin:", origin);
+  console.log("Cookies in logout request:", event.headers.cookie || event.headers.Cookie);
+
+  // Create headers object
+  const headers: Record<string, string> = {
+    "Location": `${frontendUrl}/login`,
+    "Access-Control-Allow-Origin": origin || frontendUrl,
+    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Expose-Headers": "Set-Cookie",
+  };
+  
+  // Set cookie clearing header with domain attribute matching how it was set
+  if (apiDomain) {
+    headers["Set-Cookie"] = `wos-session=; HttpOnly; Path=/; Max-Age=0; SameSite=None; Secure; Domain=${apiDomain}`;
+  } else {
+    headers["Set-Cookie"] = "wos-session=; HttpOnly; Path=/; Max-Age=0; SameSite=None; Secure";
+  }
+  
+  // Return success with cookie clearing headers
+  return {
+    statusCode: 200,
+    headers,
+    body: JSON.stringify({ success: true }),
+  };
 };
 
 export const authApi = {
   login: loginHandler,
   callback: callbackHandler,
   logout: logoutHandler,
+  me: meHandler,
 };

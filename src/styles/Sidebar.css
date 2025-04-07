@@ -12,41 +12,19 @@
 .sidebar-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
+  justify-content: center;
+  padding: 16px;
   border-bottom: 1px solid var(--border-color);
 }
 
-.team-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.team-avatar {
-  width: 24px;
-  height: 24px;
-  background-color: var(--team-avatar-bg);
-  color: var(--team-avatar-color);
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: bold;
-}
-
-.team-name {
-  font-weight: 500;
+.app-logo {
+  font-weight: 600;
+  font-size: 18px;
   color: var(--text-color);
 }
 
-.sidebar-menu-button {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--text-color);
-  font-size: 16px;
-  padding: 4px;
+.team-info, .team-avatar, .team-name, .sidebar-menu-button {
+  display: none;
 }
 
 .sidebar-search {
@@ -94,6 +72,28 @@
   color: var(--text-color);
   text-transform: uppercase;
   font-weight: 500;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.add-page-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-color);
+  font-size: 16px;
+  padding: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.add-page-button:hover {
+  background-color: var(--hover-bg);
 }
 
 .teamspace-item {
@@ -211,38 +211,7 @@
 }
 
 .sidebar-trial {
-  margin-top: auto;
-  padding: 16px;
-  background-color: var(--trial-bg);
-  border-top: 1px solid var(--border-color);
-}
-
-.trial-title {
-  font-weight: 500;
-  margin-bottom: 4px;
-  color: var(--text-color);
-}
-
-.trial-expiry {
-  font-size: 12px;
-  color: var(--text-color);
-  margin-bottom: 12px;
-}
-
-.manage-plan-button {
-  width: 100%;
-  padding: 8px;
-  background-color: var(--button-bg);
-  border: 1px solid var(--button-border);
-  border-radius: 4px;
-  color: var(--button-text);
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-
-.manage-plan-button:hover {
-  background-color: var(--button-hover-bg);
+  display: none;
 }
 
 .sidebar-loading {
@@ -273,4 +242,138 @@
 
 .retry-button:hover {
   background-color: var(--retry-button-hover-bg);
+}
+
+.sidebar-user-profile {
+  margin-top: auto;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background-color: var(--accent-color);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 500;
+}
+
+.user-details {
+  flex: 1;
+  overflow: hidden;
+}
+
+.user-name {
+  font-weight: 500;
+  color: var(--text-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-email {
+  font-size: 12px;
+  color: var(--text-color-light);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: center;
+}
+
+.logout-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background-color: var(--hover-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-color);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  width: 100%;
+  justify-content: center;
+}
+
+.logout-button:hover {
+  background-color: var(--accent-color-light);
+}
+
+.logout-icon {
+  font-size: 16px;
+}
+
+.user-menu-container {
+  position: relative;
+  margin-left: auto;
+}
+
+.user-menu-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-color);
+  font-size: 16px;
+  padding: 4px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.user-menu-button:hover {
+  background-color: var(--hover-bg);
+}
+
+/* User menu dropdown styles */
+.user-dropdown-menu {
+  position: absolute;
+  bottom: 40px;
+  right: 0;
+  background-color: var(--sidebar-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  min-width: 160px;
+  z-index: 100;
+  overflow: hidden;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-color);
+  font-size: 14px;
+  transition: background-color 0.2s;
+}
+
+.dropdown-item:hover {
+  background-color: var(--hover-bg);
+}
+
+.dropdown-icon {
+  margin-right: 8px;
+  font-size: 16px;
 }

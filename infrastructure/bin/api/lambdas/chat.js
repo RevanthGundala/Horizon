@@ -10,27 +10,17 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.chatApi = exports.toolExecutionHandler = exports.chatHandler = void 0;
-const auth_1 = require("../middleware/auth");
+const middleware_1 = require("../utils/middleware");
 const stream_1 = require("../utils/stream");
 const tools_1 = require("../tools");
 /**
  * Chat handler - processes chat requests and streams responses from Fireworks AI
  */
-exports.chatHandler = (0, auth_1.withAuth)((event, user) => __awaiter(void 0, void 0, void 0, function* () {
-    // Handle OPTIONS request for CORS preflight
-    function createHeaders() {
-        return {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "http://localhost:5173",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Amz-Date, X-Api-Key, X-Amz-Security-Token",
-            "Access-Control-Allow-Credentials": "true"
-        };
-    }
+exports.chatHandler = (0, middleware_1.withAuth)((event, user) => __awaiter(void 0, void 0, void 0, function* () {
     if (event.httpMethod === 'OPTIONS') {
         return {
             statusCode: 200,
-            headers: createHeaders(),
+            headers: (0, middleware_1.createHeaders)(),
             body: '',
         };
     }
@@ -38,7 +28,7 @@ exports.chatHandler = (0, auth_1.withAuth)((event, user) => __awaiter(void 0, vo
         if (!event.body) {
             return {
                 statusCode: 400,
-                headers: createHeaders(),
+                headers: (0, middleware_1.createHeaders)(),
                 body: JSON.stringify({ error: "Request body is required" }),
             };
         }
@@ -47,7 +37,7 @@ exports.chatHandler = (0, auth_1.withAuth)((event, user) => __awaiter(void 0, vo
         if (!fireworksApiKey) {
             return {
                 statusCode: 500,
-                headers: createHeaders(),
+                headers: (0, middleware_1.createHeaders)(),
                 body: JSON.stringify({ error: "Fireworks API key is not configured" }),
             };
         }
@@ -77,7 +67,7 @@ exports.chatHandler = (0, auth_1.withAuth)((event, user) => __awaiter(void 0, vo
             const streamContent = yield (0, stream_1.streamToString)(responseStream);
             return {
                 statusCode: 200,
-                headers: Object.assign(Object.assign({}, createHeaders()), { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' }),
+                headers: Object.assign(Object.assign({}, (0, middleware_1.createHeaders)()), { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' }),
                 body: streamContent,
                 isBase64Encoded: false,
             };
@@ -97,7 +87,7 @@ exports.chatHandler = (0, auth_1.withAuth)((event, user) => __awaiter(void 0, vo
             }
             return {
                 statusCode: 200,
-                headers: createHeaders(),
+                headers: (0, middleware_1.createHeaders)(),
                 body: JSON.stringify(yield response.json()),
             };
         }
@@ -106,7 +96,7 @@ exports.chatHandler = (0, auth_1.withAuth)((event, user) => __awaiter(void 0, vo
         console.error("Chat error:", error);
         return {
             statusCode: 500,
-            headers: createHeaders(),
+            headers: (0, middleware_1.createHeaders)(),
             body: JSON.stringify({ error: "Failed to process chat request" }),
         };
     }
@@ -114,12 +104,12 @@ exports.chatHandler = (0, auth_1.withAuth)((event, user) => __awaiter(void 0, vo
 /**
  * Tool execution handler - processes tool calls from the chat
  */
-exports.toolExecutionHandler = (0, auth_1.withAuth)((event, user) => __awaiter(void 0, void 0, void 0, function* () {
+exports.toolExecutionHandler = (0, middleware_1.withAuth)((event, user) => __awaiter(void 0, void 0, void 0, function* () {
     // Handle OPTIONS request for CORS preflight
     if (event.httpMethod === 'OPTIONS') {
         return {
             statusCode: 200,
-            headers: (0, auth_1.createHeaders)(),
+            headers: (0, middleware_1.createHeaders)(),
             body: '',
         };
     }
@@ -127,7 +117,7 @@ exports.toolExecutionHandler = (0, auth_1.withAuth)((event, user) => __awaiter(v
         if (!event.body) {
             return {
                 statusCode: 400,
-                headers: (0, auth_1.createHeaders)(),
+                headers: (0, middleware_1.createHeaders)(),
                 body: JSON.stringify({ error: "Request body is required" }),
             };
         }
@@ -137,7 +127,7 @@ exports.toolExecutionHandler = (0, auth_1.withAuth)((event, user) => __awaiter(v
         if (!tools_1.toolRegistry[toolName]) {
             return {
                 statusCode: 400,
-                headers: (0, auth_1.createHeaders)(),
+                headers: (0, middleware_1.createHeaders)(),
                 body: JSON.stringify({ error: `Unknown tool: ${toolName}` }),
             };
         }
@@ -162,7 +152,7 @@ exports.toolExecutionHandler = (0, auth_1.withAuth)((event, user) => __awaiter(v
         }
         return {
             statusCode: 200,
-            headers: (0, auth_1.createHeaders)(),
+            headers: (0, middleware_1.createHeaders)(),
             body: JSON.stringify({ result }),
         };
     }
@@ -170,7 +160,7 @@ exports.toolExecutionHandler = (0, auth_1.withAuth)((event, user) => __awaiter(v
         console.error("Tool execution error:", error);
         return {
             statusCode: 500,
-            headers: (0, auth_1.createHeaders)(),
+            headers: (0, middleware_1.createHeaders)(),
             body: JSON.stringify({ error: "Failed to execute tool" }),
         };
     }

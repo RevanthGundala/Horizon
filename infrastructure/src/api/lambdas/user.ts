@@ -1,28 +1,16 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { withAuth } from "../middleware/auth";
+import { withAuth, createHeaders } from "../utils/middleware";
 import { Client } from "pg";
-
-// Helper function to create consistent headers
-function createHeaders() {
-  return {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "http://localhost:5173",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Amz-Date, X-Api-Key, X-Amz-Security-Token",
-    "Access-Control-Allow-Credentials": "true"
-  };
-}
 
 // Handler that returns user data (protected by auth)
 const userHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
   try {
     // Connect to the database
     const client = new Client({
-      host: process.env.DB_HOST,
-      port: 5432,
-      database: process.env.DB_NAME || "horizon",
-      user: process.env.DB_USER || "postgres",
-      password: process.env.DB_PASSWORD,
+      connectionString: process.env.DB_URL,
+      ssl: {
+        rejectUnauthorized: false
+      }
     });
 
     await client.connect();
@@ -52,10 +40,6 @@ const userHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIG
           user: {
             id: dbUser.id,
             email: dbUser.email,
-            firstName: dbUser.first_name || user.firstName,
-            lastName: dbUser.last_name || user.lastName,
-            profilePictureUrl: user.profilePictureUrl,
-            createdAt: dbUser.created_at,
             // Add any other user properties from the database
           }
         }),

@@ -1,43 +1,32 @@
-import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { WorkOS } from "@workos-inc/node";
+import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import * as cookie from "cookie";
 
-// REMOVE: import { config } from './config'; // <-- Remove this line
-
-// --- WorkOS Client Handling (Lazy Initialization) ---
-// Store the client instance once created
-let workosClientInstance: WorkOS | null = null;
-
-function getWorkOSClient(): WorkOS {
-  // Check if the client has already been initialized
-  if (workosClientInstance) {
-    return workosClientInstance;
-  }
-
-  // Read environment variables AT RUNTIME
-  const apiKey = process.env.WORKOS_API_KEY;
-  const clientId = process.env.WORKOS_CLIENT_ID;
-
-  // Validate that environment variables are present (critical for runtime)
-  if (!apiKey) {
-    throw new Error("WORKOS_API_KEY environment variable is not set.");
-  }
-  if (!clientId) {
-    throw new Error("WORKOS_CLIENT_ID environment variable is not set.");
-  }
-
-  // Create and store the instance
-  workosClientInstance = new WorkOS(apiKey, { clientId });
-  return workosClientInstance;
-}
-
-export const createHeaders = () => {
+export const createHeaders = (origin?: string) => {
+  // Get the frontend URL from environment variables
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+  
+  // Use the provided origin or default to the frontend URL
+  const allowOrigin = origin || frontendUrl;
+  
   return {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": process.env.frontendUrl || "",
+    "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Amz-Date, X-Api-Key, X-Amz-Security-Token",
     "Access-Control-Allow-Credentials": "true"
+  };
+};
+
+// Handler for OPTIONS requests (CORS preflight)
+export const handleOptions = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  // Get the origin from the request headers
+  const origin = event.headers.origin || event.headers.Origin || process.env.FRONTEND_URL;
+  
+  return {
+    statusCode: 200,
+    headers: createHeaders(origin),
+    body: ""
   };
 };
 
@@ -46,6 +35,11 @@ export const withAuth = (
   handler: (event: APIGatewayProxyEvent, user: any) => Promise<APIGatewayProxyResult>
 ) => {
   return async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+    // Handle OPTIONS requests for CORS preflight
+    if (event.httpMethod === "OPTIONS") {
+      return handleOptions(event);
+    }
+    
     const cookies = parseCookies(event.headers.cookie || event.headers.Cookie); // Handle potential case difference
     const sessionData = cookies["wos-session"] || "";
 
@@ -54,7 +48,11 @@ export const withAuth = (
     if (!frontendUrl) {
        console.error("FRONTEND_URL environment variable is not set.");
        // Return an error or fallback, but ideally it should always be set
-       return { statusCode: 500, body: JSON.stringify({ error: "Internal configuration error" }) };
+       return { 
+         statusCode: 500, 
+         headers: createHeaders(event.headers.origin || event.headers.Origin),
+         body: JSON.stringify({ error: "Internal configuration error" }) 
+       };
     }
 
     const loginRedirectUrl = `${frontendUrl}/login`;
@@ -62,7 +60,7 @@ export const withAuth = (
     if (!sessionData) {
       return {
         statusCode: 302,
-        headers: createHeaders(frontendUrl, { "Location": loginRedirectUrl }), // Pass frontendUrl to createHeaders
+        headers: createHeaders(event.headers.origin || event.headers.Origin),
         body: JSON.stringify({ error: "Authentication required" }),
       };
     }
@@ -85,10 +83,7 @@ export const withAuth = (
            const clearCookieHeader = createClearCookie();
            return {
              statusCode: 302,
-             headers: createHeaders(frontendUrl, {
-               "Location": loginRedirectUrl,
-               "Set-Cookie": clearCookieHeader,
-              }),
+             headers: createHeaders(event.headers.origin || event.headers.Origin),
              body: JSON.stringify({ error: "Authentication failed" }),
            };
         }
@@ -101,11 +96,7 @@ export const withAuth = (
           const clearCookieHeader = createClearCookie();
           return {
             statusCode: 302,
-            headers: createHeaders(frontendUrl, {
-              "Location": loginRedirectUrl,
-              "Set-Cookie": refreshedCookie, // Send the new (but failed) cookie just in case? Or clear? Let's clear.
-              // "Set-Cookie": clearCookieHeader
-            }),
+            headers: createHeaders(event.headers.origin || event.headers.Origin),
             body: JSON.stringify({ error: "Authentication failed after refresh" }),
           };
         }
@@ -115,7 +106,7 @@ export const withAuth = (
           ...result,
           headers: {
             ...result.headers, // Preserve original handler headers
-            ...createHeaders(frontendUrl), // Add standard CORS/etc headers
+            ...createHeaders(event.headers.origin || event.headers.Origin), // Add standard CORS/etc headers
             "Set-Cookie": refreshedCookie, // Add the Set-Cookie header
           },
         };
@@ -124,10 +115,7 @@ export const withAuth = (
         const clearCookieHeader = createClearCookie();
         return {
           statusCode: 302,
-          headers: createHeaders(frontendUrl, {
-             "Location": loginRedirectUrl,
-             "Set-Cookie": clearCookieHeader
-          }),
+          headers: createHeaders(event.headers.origin || event.headers.Origin),
           body: JSON.stringify({ error: "Authentication failed during refresh" }),
         };
       }
@@ -136,10 +124,7 @@ export const withAuth = (
       const clearCookieHeader = createClearCookie();
       return {
         statusCode: 302,
-        headers: createHeaders(frontendUrl, {
-           "Location": loginRedirectUrl,
-           "Set-Cookie": clearCookieHeader
-        }),
+        headers: createHeaders(event.headers.origin || event.headers.Origin),
         body: JSON.stringify({ error: "Authentication error" }),
       };
     }
@@ -161,7 +146,7 @@ export const createClearCookie = (): string => {
    return cookie.serialize("wos-session", "", { /* ... maxAge: 0 ... */ });
 };
 
-export const parseCookies = (cookieHeader?: string): Record<string, string> => {
+export const parseCookies = (cookieHeader?: string): Record<string, string | undefined> => {
   return cookieHeader ? cookie.parse(cookieHeader) : {};
 };
 
@@ -175,7 +160,9 @@ export const loadAndAuthenticateSession = async (sessionData: string): Promise<a
   }
 
   try {
-    const workos = getWorkOSClient(); // Get the lazily initialized client
+    const workos = new WorkOS(process.env.WORKOS_API_KEY || "", {
+      clientId: process.env.WORKOS_CLIENT_ID || "",
+    });
     const session = workos.userManagement.loadSealedSession({
       sessionData,
       cookiePassword, // Use the runtime value
@@ -192,7 +179,9 @@ export const refreshSession = async (sessionData: string): Promise<any> => {
    }
 
    try {
-     const workos = getWorkOSClient(); // Get the lazily initialized client
+     const workos = new WorkOS(process.env.WORKOS_API_KEY || "", {
+       clientId: process.env.WORKOS_CLIENT_ID || "",
+     });
      const session = workos.userManagement.loadSealedSession({
        sessionData,
        cookiePassword, // Use the runtime value

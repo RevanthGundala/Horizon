@@ -1,5 +1,5 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { createHeaders, withAuth } from "../middleware/auth";
+import { createHeaders, withAuth } from "../utils/middleware";
 import { createFireworksStream, streamToString } from "../utils/stream";
 import { availableTools, toolRegistry } from "../tools";
 
