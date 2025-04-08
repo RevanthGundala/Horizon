@@ -8,7 +8,27 @@ contextBridge.exposeInMainWorld('electron', {
   ipcRenderer: {
     invoke: (channel: string, ...args: any[]) => {
       // whitelist channels
-      const validChannels = ['fetch-api', 'toMain'];
+      const validChannels = [
+        'fetch-api', 
+        'toMain',
+        // Database operations
+        'db:get-pages',
+        'db:get-page',
+        'db:create-page',
+        'db:update-page',
+        'db:delete-page',
+        'db:get-blocks',
+        'db:get-block',
+        'db:create-block',
+        'db:update-block',
+        'db:delete-block',
+        'db:update-blocks-batch',
+        'db:get-pending-changes-count',
+        // Sync operations
+        'sync:request-sync',
+        'sync:get-network-status',
+        'sync:set-online-status'
+      ];
       if (validChannels.includes(channel)) {
         return ipcRenderer.invoke(channel, ...args);
       }

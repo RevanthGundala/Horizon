@@ -22,6 +22,7 @@ async function init() {
     await client.query(`DROP TABLE IF EXISTS embeddings CASCADE;`);
     await client.query(`DROP TABLE IF EXISTS records CASCADE;`);
     await client.query(`DROP TABLE IF EXISTS databases CASCADE;`);
+    await client.query(`DROP TABLE IF EXISTS sync_log CASCADE;`);
     await client.query(`DROP TABLE IF EXISTS blocks CASCADE;`);
     await client.query(`DROP TABLE IF EXISTS pages CASCADE;`);
     await client.query(`DROP TABLE IF EXISTS users CASCADE;`);
@@ -43,7 +44,9 @@ async function init() {
         is_favorite BOOLEAN DEFAULT false,
         type TEXT DEFAULT 'page',
         created_at TIMESTAMP DEFAULT now(),
-        updated_at TIMESTAMP DEFAULT now()
+        updated_at TIMESTAMP DEFAULT now(),
+        sync_status TEXT DEFAULT 'synced',
+        client_updated_at TIMESTAMP
       );
     `);
 
@@ -57,7 +60,24 @@ async function init() {
         metadata JSONB,
         order_index INTEGER NOT NULL,
         created_at TIMESTAMP DEFAULT now(),
-        updated_at TIMESTAMP DEFAULT now()
+        updated_at TIMESTAMP DEFAULT now(),
+        sync_status TEXT DEFAULT 'synced',
+        client_updated_at TIMESTAMP
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sync_log (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        payload JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT now(),
+        synced_at TIMESTAMP,
+        error_message TEXT,
+        device_id TEXT
       );
     `);
 

@@ -1,0 +1,67 @@
+.sync-status {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin: 8px;
+  background-color: #f5f5f5;
+  font-size: 14px;
+  gap: 12px;
+}
+
+.sync-status.offline {
+  background-color: #fff3f3;
+}
+
+.sync-status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: #4caf50;
+}
+
+.status-dot.offline {
+  background-color: #f44336;
+}
+
+.pending-changes {
+  color: #ff9800;
+  font-weight: 500;
+}
+
+.sync-button {
+  background-color: #2196f3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background-color 0.2s;
+}
+
+.sync-button:hover:not(:disabled) {
+  background-color: #1976d2;
+}
+
+.sync-button:disabled {
+  background-color: #bbdefb;
+  cursor: not-allowed;
+}
+
+.last-synced {
+  color: #757575;
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.sync-status.loading {
+  color: #757575;
+  font-style: italic;
+}

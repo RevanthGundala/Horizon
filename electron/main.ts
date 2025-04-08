@@ -1,6 +1,9 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'path';
 import https from 'https';
+import DatabaseService from './database';
+import SyncService from './database/sync';
+import { setupDatabaseIpcHandlers } from './database/ipc-handlers';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 let squirrelStartup = false;
@@ -13,6 +16,10 @@ try {
 if (squirrelStartup) {
   app.quit();
 }
+
+// Initialize database and sync services
+let db: DatabaseService;
+let syncService: SyncService;
 
 // Handle API fetch requests from the renderer process
 ipcMain.handle('fetch-api', async (event, url) => {
@@ -68,12 +75,33 @@ const createWindow = () => {
     // Open the DevTools.
     mainWindow.webContents.openDevTools();
   }
+
+  // Handle window close event
+  mainWindow.on('close', () => {
+    // Perform any cleanup needed before the window closes
+    if (syncService) {
+      // Try to sync one last time before closing
+      syncService.syncWithServer().catch(err => {
+        console.error('Error during final sync:', err);
+      });
+    }
+  });
 };
 
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
+  // Initialize database
+  db = DatabaseService.getInstance();
+  
+  // Set up IPC handlers for database operations
+  setupDatabaseIpcHandlers();
+  
+  // Initialize sync service
+  syncService = SyncService.getInstance();
+  syncService.initialize();
+  
   createWindow();
 
   app.on('activate', () => {
@@ -91,5 +119,16 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
+  }
+});
+
+// Clean up resources before quitting
+app.on('will-quit', () => {
+  if (syncService) {
+    syncService.shutdown();
+  }
+  
+  if (db) {
+    db.close();
   }
 });

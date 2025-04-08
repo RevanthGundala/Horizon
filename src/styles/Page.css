@@ -7,6 +7,27 @@
   background-color: var(--bg-primary);
 }
 
+.page-back-button {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  display: flex;
+  align-items: center;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 14px;
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: background-color 0.2s;
+  z-index: 10;
+}
+
+.page-back-button:hover {
+  background-color: var(--hover-bg);
+}
+
 .page-cover {
   position: relative;
   width: 100%;
@@ -182,4 +203,15 @@
   height: 100%;
   font-size: 16px;
   color: var(--text-primary);
+}
+
+.page-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 16px;
+  color: var(--error-color);
+  padding: 20px;
+  text-align: center;
 }

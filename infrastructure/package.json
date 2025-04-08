@@ -1,0 +1,23 @@
+{
+  "name": "horizon-lambdas",
+  "scripts": {
+    "up": "tsc && pulumi up",
+    "down": "pulumi destroy"
+  },
+  "dependencies": {
+    "pg": "^8.14.1",
+    "aws-lambda": "^1.0.7",
+    "cookie": "^1.0.2",
+    "uuid": "^11.1.0",
+    "@workos-inc/node": "^7.45.0"
+  },
+  "devDependencies": {
+    "@pulumi/aws": "^6.75.0",
+    "@pulumi/awsx": "^2.21.1",
+    "@pulumi/pulumi": "^3.160.0",
+    "@pulumi/random": "^4.18.0",
+    "@types/aws-lambda": "^8.10.136",
+    "@types/node": "^18.19.26",
+    "typescript": "^5.3.3"
+  }
+}

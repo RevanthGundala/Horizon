@@ -42,6 +42,8 @@ const status_1 = require("./api/lambdas/status");
 const user_1 = require("./api/lambdas/user");
 const chat_1 = require("./api/lambdas/chat");
 const auth_1 = require("./api/lambdas/auth");
+const pages_1 = require("./api/lambdas/pages");
+const blocks_1 = require("./api/lambdas/blocks");
 // Get environment variables from Pulumi config
 const config = new pulumi.Config();
 const apiUrl = config.require("API_URL");
@@ -123,6 +125,88 @@ const api = new awsx.classic.apigateway.API("horizon-api", {
                 environment: env,
                 timeout: 60, // Longer timeout for streaming responses
                 memorySize: 512, // More memory for processing chat requests
+            }),
+        },
+        // Pages endpoints
+        {
+            path: "/api/pages",
+            method: "GET",
+            eventHandler: new aws.lambda.CallbackFunction("get-pages-handler", {
+                callback: pages_1.pagesApi.getAllPages,
+                environment: env,
+            }),
+        },
+        {
+            path: "/api/pages/{id}",
+            method: "GET",
+            eventHandler: new aws.lambda.CallbackFunction("get-page-handler", {
+                callback: pages_1.pagesApi.getPage,
+                environment: env,
+            }),
+        },
+        {
+            path: "/api/pages",
+            method: "POST",
+            eventHandler: new aws.lambda.CallbackFunction("create-page-handler", {
+                callback: pages_1.pagesApi.createPage,
+                environment: env,
+            }),
+        },
+        {
+            path: "/api/pages/{id}",
+            method: "PUT",
+            eventHandler: new aws.lambda.CallbackFunction("update-page-handler", {
+                callback: pages_1.pagesApi.updatePage,
+                environment: env,
+            }),
+        },
+        {
+            path: "/api/pages/{id}",
+            method: "DELETE",
+            eventHandler: new aws.lambda.CallbackFunction("delete-page-handler", {
+                callback: pages_1.pagesApi.deletePage,
+                environment: env,
+            }),
+        },
+        // Blocks endpoints
+        {
+            path: "/api/blocks",
+            method: "GET",
+            eventHandler: new aws.lambda.CallbackFunction("get-blocks-handler", {
+                callback: blocks_1.blocksApi.getBlocks,
+                environment: env,
+            }),
+        },
+        {
+            path: "/api/blocks",
+            method: "POST",
+            eventHandler: new aws.lambda.CallbackFunction("create-block-handler", {
+                callback: blocks_1.blocksApi.createBlock,
+                environment: env,
+            }),
+        },
+        {
+            path: "/api/blocks/{id}",
+            method: "PUT",
+            eventHandler: new aws.lambda.CallbackFunction("update-block-handler", {
+                callback: blocks_1.blocksApi.updateBlock,
+                environment: env,
+            }),
+        },
+        {
+            path: "/api/blocks/{id}",
+            method: "DELETE",
+            eventHandler: new aws.lambda.CallbackFunction("delete-block-handler", {
+                callback: blocks_1.blocksApi.deleteBlock,
+                environment: env,
+            }),
+        },
+        {
+            path: "/api/blocks/batch",
+            method: "PUT",
+            eventHandler: new aws.lambda.CallbackFunction("update-blocks-handler", {
+                callback: blocks_1.blocksApi.updateBlocks,
+                environment: env,
             }),
         },
     ],
