@@ -11,7 +11,8 @@ import { useNavigate } from '@tanstack/react-router';
 import SyncStatus from './components/SyncStatus';
 import './styles/SyncStatus.css';
 import { setupNetworkDetection } from './utils/db';
-import { usePages } from './hooks/usePages';
+import { usePages, useCreatePage } from './hooks/usePages';
+import { useAuth } from './contexts/auth-context';
 
 function App() {
   const [searchResult, setSearchResult] = useState<string | null>(null);
@@ -21,9 +22,11 @@ function App() {
   const [cards, setCards] = useState<Card[]>([]);
   
   const navigate = useNavigate();
+  const { userId } = useAuth();
   
   // Fetch pages to display as cards
   const { data: pages, isLoading: isPagesLoading } = usePages();
+  const createPageMutation = useCreatePage();
   
   // Initialize network detection
   useEffect(() => {
@@ -82,12 +85,39 @@ function App() {
   };
 
   // Handle creating a new card
-  const handleCreateCard = () => {
-    // Generate a unique ID for the new page
-    const newId = crypto.randomUUID();
-    
-    // Navigate to the new page
-    navigate({ to: '/page/$pageId', params: { pageId: newId } });
+  const handleCreateCard = async () => {
+    try {
+      // Generate a unique ID for the new page
+      const newId = crypto.randomUUID();
+      
+      // Make sure we have a valid user ID
+      if (!userId) {
+        console.error('Cannot create page: No user ID available');
+        return;
+      }
+      
+      console.log('Creating page with user ID:', userId);
+      
+      // Create the page in the database
+      const newPage = await createPageMutation.mutateAsync({
+        id: newId,
+        title: 'Untitled Page',
+        parent_id: null,
+        user_id: userId,
+        is_favorite: 0,
+        type: 'note'
+        // Removed client_updated_at field to match backend schema
+      });
+      
+      if (newPage) {
+        // Navigate to the new page
+        navigate({ to: '/page/$pageId', params: { pageId: newId } });
+      } else {
+        console.error('Failed to create new page');
+      }
+    } catch (error) {
+      console.error('Error creating new page:', error);
+    }
   };
 
   return (

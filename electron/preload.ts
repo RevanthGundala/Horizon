@@ -9,7 +9,6 @@ contextBridge.exposeInMainWorld('electron', {
     invoke: (channel: string, ...args: any[]) => {
       // whitelist channels
       const validChannels = [
-        'fetch-api', 
         'toMain',
         // Database operations
         'db:get-pages',
@@ -27,7 +26,13 @@ contextBridge.exposeInMainWorld('electron', {
         // Sync operations
         'sync:request-sync',
         'sync:get-network-status',
-        'sync:set-online-status'
+        'sync:set-online-status',
+        // Auth operations
+        'auth:login',
+        'auth:logout',
+        'auth:is-authenticated',
+        'auth:get-user-id',
+        'sync:get-auth-cookie'
       ];
       if (validChannels.includes(channel)) {
         return ipcRenderer.invoke(channel, ...args);

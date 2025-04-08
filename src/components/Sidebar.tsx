@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link } from '@tanstack/react-router';
 import '../styles/Sidebar.css';
 import { useAuth } from '@/contexts/auth-context';
+import { usePages, useDeletePage } from '../hooks/usePages';
 
 interface TeamspaceItem {
   id: string;
@@ -20,12 +21,19 @@ const Sidebar: React.FC = () => {
   const { logout, userId } = useAuth();
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [activePageMenu, setActivePageMenu] = useState<string | null>(null);
+
+  // Fetch pages from the database
+  const { data: pages, isLoading: isPagesLoading } = usePages();
+  // Delete page mutation
+  const deletePage = useDeletePage();
 
   // Handle clicks outside the menu to close it
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
         setMenuOpen(false);
+        setActivePageMenu(null);
       }
     };
 
@@ -58,10 +66,83 @@ const Sidebar: React.FC = () => {
     }
   };
 
+  const handlePageMenuToggle = (pageId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setActivePageMenu(activePageMenu === pageId ? null : pageId);
+  };
+
+  const handleDeletePage = async (pageId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      await deletePage.mutateAsync(pageId);
+      setActivePageMenu(null);
+    } catch (error) {
+      console.error('Error deleting page:', error);
+    }
+  };
+
   return (
     <div className="sidebar">
       <div className="sidebar-header">
         <div className="app-logo">Horizon</div>
+      </div>
+      
+      {/* Pages Navigation */}
+      <div className="sidebar-nav">
+        <NavLink to="/" className="nav-item">
+          <span className="nav-icon">🏠</span>
+          <span className="nav-text">Home</span>
+        </NavLink>
+        
+        {/* Pages List */}
+        <div className="nav-section">
+          <div className="nav-section-header">
+            <span>Pages</span>
+          </div>
+          
+          {isPagesLoading ? (
+            <div className="nav-loading">Loading pages...</div>
+          ) : (
+            <div className="nav-items">
+              {pages && pages.length > 0 ? (
+                pages.map(page => (
+                  <div key={page.id} className="nav-item-container">
+                    <NavLink 
+                      key={page.id} 
+                      to={`/page/${page.id}`} 
+                      className="nav-item"
+                    >
+                      <span className="nav-icon">{page.type === 'note' ? '📝' : '📄'}</span>
+                      <span className="nav-text">{page.title}</span>
+                    </NavLink>
+                    <button 
+                      className="page-menu-button" 
+                      onClick={(e) => handlePageMenuToggle(page.id, e)}
+                      aria-label="Page options"
+                    >
+                      ⋮
+                    </button>
+                    {activePageMenu === page.id && (
+                      <div className="page-dropdown-menu">
+                        <button 
+                          className="dropdown-item delete-item"
+                          onClick={(e) => handleDeletePage(page.id, e)}
+                        >
+                          <span className="dropdown-icon">🗑️</span>
+                          <span>Delete</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="nav-empty">No pages yet</div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* User Profile at Bottom */}

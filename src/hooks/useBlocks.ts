@@ -1,20 +1,11 @@
 import { useQuery, useMutation, useQueryClient, UseQueryOptions } from '@tanstack/react-query';
 import { Store, useStore } from '@tanstack/react-store';
-import { useEffect } from 'react';
+import { useEffect, useCallback } from 'react';
 import { 
-  Block as ApiBlock, 
-  BlockInsert,
-  BlockUpdate,
-  getBlocks as fetchBlocks,
-  createBlock as createBlockApi,
-  updateBlock as updateBlockApi,
-  deleteBlock as deleteBlockApi,
-  updateBlocks as updateBlocksApi,
   CreateBlockRequest,
   UpdateBlockRequest,
   BatchUpdateBlocksRequest
-} from '../utils/api/blocks';
-import { Json } from '../types/db';
+} from '../utils/api';
 import { Block, dbBlocks, dbSync } from '../utils/db';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -146,9 +137,13 @@ export const createBlockLocally = (
 ): void => {
   blockStore.setState((state) => {
     if (!state.pageId) {
+      console.error('Cannot create block: No page ID set');
       return state;
     }
     
+    console.log('Creating block locally with tempId:', tempId);
+    
+    // Create a new pending block
     const newBlock: PendingCreatedBlock = {
       tempId,
       page_id: state.pageId,
@@ -156,10 +151,10 @@ export const createBlockLocally = (
       type: data.type,
       content: data.content || null,
       metadata: data.metadata || null,
-      order_index: data.order_index,
-      client_updated_at: new Date().toISOString()
+      order_index: data.order_index
     };
     
+    // Add to pending changes
     return {
       ...state,
       pendingChanges: {
@@ -229,11 +224,7 @@ export const reorderBlocks = (blockIds: string[]): void => {
 };
 
 export const saveChanges = async (): Promise<void> => {
-  blockStore.setState((state) => ({
-    ...state,
-    isSaving: true,
-    error: null
-  }));
+  blockStore.setState((state) => ({ ...state, isSaving: true, error: null }));
   
   try {
     const { pendingChanges, pageId } = blockStore.state;
@@ -242,23 +233,45 @@ export const saveChanges = async (): Promise<void> => {
       throw new Error('No page ID set');
     }
     
+    console.log('Saving changes for page:', pageId);
+    console.log('Pending created blocks:', Object.keys(pendingChanges.created).length);
+    console.log('Pending updated blocks:', Object.keys(pendingChanges.updated).length);
+    console.log('Pending deleted blocks:', pendingChanges.deleted.length);
+    
     // Process created blocks
     const createdBlocks = Object.values(pendingChanges.created);
-    for (const block of createdBlocks) {
-      const { tempId, ...blockData } = block;
-      const newBlockId = uuidv4();
+    for (const pendingBlock of createdBlocks) {
+      const { tempId, ...blockData } = pendingBlock;
       
-      // Create the block in the local database
-      await dbBlocks.createBlock({
-        id: newBlockId,
-        page_id: blockData.page_id,
-        user_id: blockData.user_id,
-        type: blockData.type,
-        content: blockData.content,
-        metadata: blockData.metadata,
-        order_index: blockData.order_index,
-        client_updated_at: blockData.client_updated_at
+      // Create the block in the database
+      const newBlock = await dbBlocks.createBlock({
+        ...blockData,
+        id: uuidv4(), // Generate a new ID for the block
+        page_id: pageId
       });
+      
+      if (newBlock) {
+        console.log('Created block in database:', newBlock.id);
+        
+        // Update the local store with the new block
+        blockStore.setState((state) => {
+          const newBlocks = { ...state.blocks };
+          newBlocks[newBlock.id] = newBlock;
+          
+          // Remove from pending created
+          const newCreated = { ...state.pendingChanges.created };
+          delete newCreated[tempId];
+          
+          return {
+            ...state,
+            blocks: newBlocks,
+            pendingChanges: {
+              ...state.pendingChanges,
+              created: newCreated
+            }
+          };
+        });
+      }
     }
     
     // Process updated blocks
@@ -266,30 +279,26 @@ export const saveChanges = async (): Promise<void> => {
     for (const block of updatedBlocks) {
       const { id, page_id, user_id, created_at, updated_at, sync_status, server_updated_at, ...updates } = block;
       
-      // Update the block in the local database
+      // Update the block in the database
       await dbBlocks.updateBlock(id, updates);
+      console.log('Updated block in database:', id);
     }
     
     // Process deleted blocks
     for (const blockId of pendingChanges.deleted) {
-      // Delete the block in the local database
+      // Delete the block in the database
       await dbBlocks.deleteBlock(blockId);
+      console.log('Deleted block from database:', blockId);
     }
     
     // Refresh blocks from the database
     const refreshedBlocks = await dbBlocks.getBlocks(pageId);
     setBlocks(refreshedBlocks, pageId);
     
-    // Try to sync with server if online
-    const { isOnline } = await dbSync.getNetworkStatus();
-    if (isOnline) {
-      dbSync.requestSync().catch(console.error);
-    }
+    // Set saving to false
+    blockStore.setState((state) => ({ ...state, isSaving: false }));
     
-    blockStore.setState((state) => ({
-      ...state,
-      isSaving: false
-    }));
+    console.log('All changes saved successfully');
   } catch (error) {
     console.error('Error saving changes:', error);
     
@@ -374,15 +383,70 @@ export function useCreateBlock() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: (blockData: Omit<Block, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>) => 
-      dbBlocks.createBlock(blockData),
+    mutationFn: async (blockData: Omit<Block, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>) => {
+      console.log('🔶 [FRONTEND HOOK] Creating block:', {
+        id: blockData.id,
+        page_id: blockData.page_id,
+        type: blockData.type,
+        contentLength: blockData.content ? blockData.content.length : 0,
+        order_index: blockData.order_index
+      });
+      
+      try {
+        const result = await dbBlocks.createBlock(blockData);
+        console.log('🔶 [FRONTEND HOOK] Block created successfully:', result?.id);
+        return result;
+      } catch (error) {
+        console.error('🔶 [FRONTEND HOOK] Error creating block:', error);
+        throw error;
+      }
+    },
     onSuccess: (newBlock: Block | null) => {
       if (newBlock) {
+        console.log('🔶 [FRONTEND HOOK] Invalidating queries for page:', newBlock.page_id);
         queryClient.invalidateQueries({
           queryKey: blocksKeys.list({ pageId: newBlock.page_id }),
         });
       }
     },
+    onError: (error) => {
+      console.error('🔶 [FRONTEND HOOK] Mutation error in useCreateBlock:', error);
+    }
+  });
+}
+
+export function useUpdateBlock() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: async ({ id, updates }: { id: string; updates: Partial<Omit<Block, 'id' | 'page_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>> }) => {
+      console.log('🔶 [FRONTEND HOOK] Updating block:', {
+        id,
+        contentLength: updates.content ? updates.content.length : undefined,
+        type: updates.type,
+        order_index: updates.order_index
+      });
+      
+      try {
+        const result = await dbBlocks.updateBlock(id, updates);
+        console.log('🔶 [FRONTEND HOOK] Block updated successfully:', result?.id);
+        return result;
+      } catch (error) {
+        console.error('🔶 [FRONTEND HOOK] Error updating block:', error);
+        throw error;
+      }
+    },
+    onSuccess: (updatedBlock: Block | null) => {
+      if (updatedBlock) {
+        console.log('🔶 [FRONTEND HOOK] Invalidating queries for page:', updatedBlock.page_id);
+        queryClient.invalidateQueries({
+          queryKey: blocksKeys.list({ pageId: updatedBlock.page_id }),
+        });
+      }
+    },
+    onError: (error) => {
+      console.error('🔶 [FRONTEND HOOK] Mutation error in useUpdateBlock:', error);
+    }
   });
 }
 

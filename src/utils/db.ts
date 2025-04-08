@@ -4,13 +4,13 @@ export interface Page {
   title: string;
   parent_id: string | null;
   user_id: string;
-  is_favorite: boolean;
+  is_favorite: number;
   type: string | null;
   created_at: string;
   updated_at: string;
   sync_status: 'synced' | 'pending' | 'conflict';
   server_updated_at: string | null;
-  client_updated_at: string | null;
+  // Removed client_updated_at field to match backend schema
 }
 
 export interface Block {
@@ -25,7 +25,7 @@ export interface Block {
   updated_at: string;
   sync_status: 'synced' | 'pending' | 'conflict';
   server_updated_at: string | null;
-  client_updated_at: string | null;
+  // Removed client_updated_at field to match backend schema
 }
 
 // Type definitions for the Electron API
@@ -73,6 +73,9 @@ const isElectron = () => {
   return window.electron !== undefined;
 };
 
+const ipcCall = <T = any>(channel: string, ...args: any[]): Promise<T> =>
+  window.electron.ipcRenderer.invoke(channel, ...args);
+
 // Create service instances using IPC to communicate with Electron main process
 export const dbPages: DbPagesService = {
   getPages: async (parentId?: string) => {
@@ -82,7 +85,7 @@ export const dbPages: DbPagesService = {
     }
     
     try {
-      return await window.electron.ipcRenderer.invoke('db:get-pages', parentId);
+      return await ipcCall<Page[]>('db:get-pages', parentId);
     } catch (error) {
       console.error('Error getting pages:', error);
       return [];
@@ -96,7 +99,7 @@ export const dbPages: DbPagesService = {
     }
     
     try {
-      return await window.electron.ipcRenderer.invoke('db:get-page', id);
+      return await ipcCall<{ page: Page; blocks: Block[] }>('db:get-page', id);
     } catch (error) {
       console.error('Error getting page:', error);
       return null;
@@ -110,7 +113,12 @@ export const dbPages: DbPagesService = {
     }
     
     try {
-      return await window.electron.ipcRenderer.invoke('db:create-page', pageData);
+      console.log('[Frontend] Creating page with data:', JSON.stringify(pageData, null, 2));
+      console.log('[Frontend] User ID being sent:', pageData.user_id);
+      
+      const result = await ipcCall<Page>('db:create-page', pageData);
+      console.log('[Frontend] Page created result:', JSON.stringify(result, null, 2));
+      return result;
     } catch (error) {
       console.error('Error creating page:', error);
       return null;
@@ -124,7 +132,7 @@ export const dbPages: DbPagesService = {
     }
     
     try {
-      return await window.electron.ipcRenderer.invoke('db:update-page', id, updates);
+      return await ipcCall<Page>('db:update-page', id, updates);
     } catch (error) {
       console.error('Error updating page:', error);
       return null;
@@ -138,7 +146,7 @@ export const dbPages: DbPagesService = {
     }
     
     try {
-      const result = await window.electron.ipcRenderer.invoke('db:delete-page', id);
+      const result = await ipcCall<{ success: boolean }>('db:delete-page', id);
       return result.success;
     } catch (error) {
       console.error('Error deleting page:', error);
@@ -149,88 +157,114 @@ export const dbPages: DbPagesService = {
 
 export const dbBlocks: DbBlocksService = {
   getBlocks: async (pageId: string) => {
+    console.log('📘 [FRONTEND API] Getting blocks for page:', pageId);
     if (!isElectron()) {
       console.log('Running in browser mode - returning mock data for blocks');
       return [];
     }
     
     try {
-      return await window.electron.ipcRenderer.invoke('db:get-blocks', pageId);
+      const blocks = await ipcCall<Block[]>('db:get-blocks', pageId);
+      console.log(`📘 [FRONTEND API] Retrieved ${blocks.length} blocks for page:`, pageId);
+      return blocks;
     } catch (error) {
-      console.error('Error getting blocks:', error);
-      return [];
+      console.error('📘 [FRONTEND API] Error getting blocks:', error);
+      throw error;
     }
   },
 
   getBlock: async (id: string) => {
+    console.log('📘 [FRONTEND API] Getting block by ID:', id);
     if (!isElectron()) {
       console.log('Running in browser mode - returning mock data for block');
       return null;
     }
     
     try {
-      return await window.electron.ipcRenderer.invoke('db:get-block', id);
+      const block = await ipcCall<Block>('db:get-block', id);
+      console.log('📘 [FRONTEND API] Retrieved block:', block?.id);
+      return block;
     } catch (error) {
-      console.error('Error getting block:', error);
-      return null;
+      console.error('📘 [FRONTEND API] Error getting block:', error);
+      throw error;
     }
   },
 
   createBlock: async (blockData: Omit<Block, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>) => {
+    console.log('📘 [FRONTEND API] Creating block with ID:', blockData.id);
+    console.log('📘 [FRONTEND API] Block data:', {
+      ...blockData,
+      content: blockData.content ? `${blockData.content.substring(0, 50)}... (${blockData.content.length} chars)` : null
+    });
+    
     if (!isElectron()) {
       console.log('Running in browser mode - mock block creation');
       return null;
     }
     
     try {
-      return await window.electron.ipcRenderer.invoke('db:create-block', blockData);
+      const result = await ipcCall<Block>('db:create-block', blockData);
+      console.log('📘 [FRONTEND API] Block created successfully:', result?.id);
+      return result;
     } catch (error) {
-      console.error('Error creating block:', error);
-      return null;
+      console.error('📘 [FRONTEND API] Error creating block:', error);
+      throw error;
     }
   },
 
   updateBlock: async (id: string, updates: Partial<Omit<Block, 'id' | 'page_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>) => {
+    console.log('📘 [FRONTEND API] Updating block:', id);
+    console.log('📘 [FRONTEND API] Update data:', {
+      ...updates,
+      content: updates.content ? `${updates.content.substring(0, 50)}... (${updates.content.length} chars)` : undefined
+    });
+    
     if (!isElectron()) {
       console.log('Running in browser mode - mock block update');
       return null;
     }
     
     try {
-      return await window.electron.ipcRenderer.invoke('db:update-block', id, updates);
+      const result = await ipcCall<Block>('db:update-block', id, updates);
+      console.log('📘 [FRONTEND API] Block updated successfully:', result?.id);
+      return result;
     } catch (error) {
-      console.error('Error updating block:', error);
-      return null;
+      console.error('📘 [FRONTEND API] Error updating block:', error);
+      throw error;
     }
   },
 
   deleteBlock: async (id: string) => {
+    console.log('📘 [FRONTEND API] Deleting block:', id);
     if (!isElectron()) {
       console.log('Running in browser mode - mock block deletion');
       return true;
     }
     
     try {
-      const result = await window.electron.ipcRenderer.invoke('db:delete-block', id);
-      return result.success;
+      await ipcCall<{ success: boolean }>('db:delete-block', id);
+      console.log('📘 [FRONTEND API] Block deleted successfully:', id);
+      return true;
     } catch (error) {
-      console.error('Error deleting block:', error);
-      return false;
+      console.error('📘 [FRONTEND API] Error deleting block:', error);
+      throw error;
     }
   },
 
   updateBlocksBatch: async (blocks: Array<Block | Partial<Block> & { id: string }>) => {
+    console.log(`📘 [FRONTEND API] Batch updating ${blocks.length} blocks`);
     if (!isElectron()) {
       console.log('Running in browser mode - mock blocks batch update');
       return true;
     }
     
     try {
-      const result = await window.electron.ipcRenderer.invoke('db:update-blocks-batch', blocks);
+      const result = await ipcCall<{ success: boolean }>('db:update-blocks-batch', blocks);
+      console.log('📘 [FRONTEND API] Blocks batch updated successfully');
       return result.success;
     } catch (error) {
-      console.error('Error updating blocks batch:', error);
-      return false;
+      console.error('📘 [FRONTEND API] Error batch updating blocks:', error);
+      throw error;
     }
   }
 };
@@ -243,7 +277,7 @@ export const dbSync: DbSyncService = {
     }
     
     try {
-      return await window.electron.ipcRenderer.invoke('sync:request-sync');
+      return await ipcCall<{ success: boolean; error?: string }>('sync:request-sync');
     } catch (error) {
       console.error('Error requesting sync:', error);
       return { success: false, error: String(error) };
@@ -257,7 +291,7 @@ export const dbSync: DbSyncService = {
     }
     
     try {
-      return await window.electron.ipcRenderer.invoke('sync:get-network-status');
+      return await ipcCall<{ isOnline: boolean }>('sync:get-network-status');
     } catch (error) {
       console.error('Error getting network status:', error);
       return { isOnline: true };
@@ -271,7 +305,7 @@ export const dbSync: DbSyncService = {
     }
     
     try {
-      return await window.electron.ipcRenderer.invoke('sync:set-online-status', isOnline);
+      return await ipcCall<{ success: boolean }>('sync:set-online-status', isOnline);
     } catch (error) {
       console.error('Error setting online status:', error);
       return { success: false };
@@ -285,7 +319,7 @@ export const dbSync: DbSyncService = {
     }
     
     try {
-      return await window.electron.ipcRenderer.invoke('db:get-pending-changes-count');
+      return await ipcCall<number>('db:get-pending-changes-count');
     } catch (error) {
       console.error('Error getting pending changes count:', error);
       return 0;

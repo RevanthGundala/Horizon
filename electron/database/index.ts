@@ -70,6 +70,8 @@ class DatabaseService {
     
     // Initialize database schema
     this.initSchema();
+
+    console.log(`🔶 [ELECTRON DB] SQLite path: ${dbPath}`);
   }
 
   public static getInstance(): DatabaseService {
@@ -92,7 +94,7 @@ class DatabaseService {
         title TEXT NOT NULL,
         parent_id TEXT,
         user_id TEXT NOT NULL,
-        is_favorite BOOLEAN DEFAULT FALSE,
+        is_favorite INTEGER DEFAULT 0,
         type TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -133,24 +135,6 @@ class DatabaseService {
         error_message TEXT
       );
     `);
-
-    // Create network_status table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS network_status (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        is_online BOOLEAN NOT NULL DEFAULT FALSE,
-        last_checked TEXT NOT NULL
-      );
-    `);
-
-    // Insert default network status if not exists
-    const networkStatus = this.db.prepare('SELECT * FROM network_status WHERE id = 1').get();
-    if (!networkStatus) {
-      this.db.prepare(`
-        INSERT INTO network_status (id, is_online, last_checked)
-        VALUES (1, FALSE, datetime('now'))
-      `).run();
-    }
   }
 
   // Pages CRUD operations
@@ -169,26 +153,68 @@ class DatabaseService {
   }
 
   public createPage(page: Omit<Page, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>): Page {
+    console.log(`🔶 [ELECTRON DB] Creating page with ID: ${page.id}, title: ${page.title}`);
+    console.log(`🔶 [ELECTRON DB] User ID for page: ${page.user_id}`);
+    
     const now = new Date().toISOString();
-    const newPage: Page = {
-      ...page,
-      created_at: now,
-      updated_at: now,
-      sync_status: 'pending',
-      server_updated_at: null
-    };
-
-    const stmt = this.db.prepare(`
-      INSERT INTO pages (id, title, parent_id, user_id, is_favorite, type, created_at, updated_at, sync_status, server_updated_at)
-      VALUES (@id, @title, @parent_id, @user_id, @is_favorite, @type, @created_at, @updated_at, @sync_status, @server_updated_at)
-    `);
     
-    stmt.run(newPage);
-    
-    // Add to sync log
-    this.addToSyncLog('page', newPage.id, 'create', JSON.stringify(newPage));
-    
-    return newPage;
+    try {
+      // Convert boolean to integer for SQLite
+      const is_favorite_value = page.is_favorite ? 1 : 0;
+      
+      // Log the exact data we're about to insert
+      console.log(`🔶 [ELECTRON DB] Page data before insert:`, {
+        id: page.id,
+        title: page.title,
+        parent_id: page.parent_id,
+        user_id: page.user_id,
+        is_favorite: is_favorite_value, // Show the integer value
+        type: page.type
+      });
+      
+      // Use positional parameters for better SQLite compatibility
+      const stmt = this.db.prepare(`
+        INSERT INTO pages (id, title, parent_id, user_id, is_favorite, type, created_at, updated_at, sync_status, server_updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      
+      stmt.run(
+        page.id,
+        page.title,
+        page.parent_id,
+        page.user_id,
+        is_favorite_value, // Use the integer value
+        page.type || 'note',
+        now,
+        now,
+        'pending',
+        null
+      );
+      
+      console.log(`🔶 [ELECTRON DB] Successfully inserted page with ID: ${page.id}`);
+      
+      // Create the complete Page object for the return value
+      const newPage: Page = {
+        id: page.id,
+        title: page.title,
+        parent_id: page.parent_id,
+        user_id: page.user_id,
+        is_favorite: Boolean(is_favorite_value), // Convert back to boolean for TypeScript
+        type: page.type || 'note',
+        created_at: now,
+        updated_at: now,
+        sync_status: 'pending',
+        server_updated_at: null
+      };
+      
+      // Add to sync log
+      this.addToSyncLog('page', newPage.id, 'create', JSON.stringify(newPage));
+      
+      return newPage;
+    } catch (error) {
+      console.error(`🔶 [ELECTRON DB] Error inserting page:`, error);
+      throw error;
+    }
   }
 
   public updatePage(id: string, updates: Partial<Omit<Page, 'id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>): Page | undefined {
@@ -196,25 +222,37 @@ class DatabaseService {
     if (!page) return undefined;
 
     const now = new Date().toISOString();
+    
+    // Convert boolean to number for SQLite compatibility if present
+    const is_favorite_value = updates.is_favorite !== undefined ? (updates.is_favorite ? 1 : 0) : (page.is_favorite ? 1 : 0);
+    
+    const stmt = this.db.prepare(`
+      UPDATE pages 
+      SET title = ?, 
+          parent_id = ?, 
+          is_favorite = ?, 
+          type = ?, 
+          updated_at = ?,
+          sync_status = ?
+      WHERE id = ?
+    `);
+    
+    stmt.run(
+      updates.title || page.title,
+      updates.parent_id !== undefined ? updates.parent_id : page.parent_id,
+      is_favorite_value,
+      updates.type || page.type,
+      now, // updated_at
+      'pending', // sync_status
+      id
+    );
+    
     const updatedPage: Page = {
       ...page,
       ...updates,
       updated_at: now,
       sync_status: 'pending'
     };
-
-    const stmt = this.db.prepare(`
-      UPDATE pages 
-      SET title = @title, 
-          parent_id = @parent_id, 
-          is_favorite = @is_favorite, 
-          type = @type, 
-          updated_at = @updated_at,
-          sync_status = @sync_status
-      WHERE id = @id
-    `);
-    
-    stmt.run(updatedPage);
     
     // Add to sync log
     this.addToSyncLog('page', updatedPage.id, 'update', JSON.stringify(updatedPage));
@@ -235,8 +273,21 @@ class DatabaseService {
 
   // Blocks CRUD operations
   public getBlocks(pageId: string): Block[] {
+    console.log(`🔶 [ELECTRON DB] Getting blocks for page: ${pageId}`);
     const stmt = this.db.prepare('SELECT * FROM blocks WHERE page_id = ? ORDER BY order_index ASC');
-    return stmt.all(pageId) as Block[];
+    const blocks = stmt.all(pageId) as Block[];
+    console.log(`🔶 [ELECTRON DB] Found ${blocks.length} blocks for page ${pageId}`);
+    
+    // Log block details for debugging
+    if (blocks.length > 0) {
+      const editorBlocks = blocks.filter(b => b.type === 'editor');
+      console.log(`🔶 [ELECTRON DB] Found ${editorBlocks.length} editor blocks for page ${pageId}`);
+      editorBlocks.forEach(b => {
+        console.log(`🔶 [ELECTRON DB] Editor block ${b.id} for page ${b.page_id}, content length: ${b.content ? b.content.length : 0}`);
+      });
+    }
+    
+    return blocks;
   }
 
   public getBlock(id: string): Block | undefined {
@@ -245,57 +296,136 @@ class DatabaseService {
   }
 
   public createBlock(block: Omit<Block, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>): Block {
+    console.log(`🔶 [ELECTRON DB] Creating block for page: ${block.page_id}, type: ${block.type}`);
+    
     const now = new Date().toISOString();
-    const newBlock: Block = {
-      ...block,
-      created_at: now,
-      updated_at: now,
-      sync_status: 'pending',
-      server_updated_at: null
-    };
-
-    const stmt = this.db.prepare(`
-      INSERT INTO blocks (id, page_id, user_id, type, content, metadata, order_index, created_at, updated_at, sync_status, server_updated_at)
-      VALUES (@id, @page_id, @user_id, @type, @content, @metadata, @order_index, @created_at, @updated_at, @sync_status, @server_updated_at)
-    `);
     
-    stmt.run(newBlock);
-    
-    // Add to sync log
-    this.addToSyncLog('block', newBlock.id, 'create', JSON.stringify(newBlock));
-    
-    return newBlock;
+    try {
+      // Log the exact data we're about to insert
+      console.log(`🔶 [ELECTRON DB] Block data before insert:`, {
+        id: block.id,
+        page_id: block.page_id,
+        user_id: block.user_id,
+        type: block.type,
+        content: block.content ? `${block.content.substring(0, 50)}...` : null, // Truncate for logging
+        metadata: block.metadata,
+        order_index: block.order_index
+      });
+      
+      // Use positional parameters for better SQLite compatibility
+      const stmt = this.db.prepare(`
+        INSERT INTO blocks (id, page_id, user_id, type, content, metadata, order_index, created_at, updated_at, sync_status, server_updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      
+      stmt.run(
+        block.id,
+        block.page_id,
+        block.user_id,
+        block.type,
+        block.content,
+        block.metadata,
+        block.order_index,
+        now, // created_at
+        now, // updated_at
+        'pending', // sync_status
+        null // server_updated_at
+      );
+      
+      // Create the complete Block object for the return value
+      const newBlock: Block = {
+        id: block.id,
+        page_id: block.page_id,
+        user_id: block.user_id,
+        type: block.type,
+        content: block.content,
+        metadata: block.metadata,
+        order_index: block.order_index,
+        created_at: now,
+        updated_at: now,
+        sync_status: 'pending',
+        server_updated_at: null
+      };
+      
+      // Add to sync log
+      this.addToSyncLog('block', newBlock.id, 'create', JSON.stringify(newBlock));
+      
+      console.log(`🔶 [ELECTRON DB] Created block ${newBlock.id} for page ${newBlock.page_id}`);
+      if (newBlock.type === 'editor') {
+        console.log(`🔶 [ELECTRON DB] Created editor block with content length: ${newBlock.content ? newBlock.content.length : 0}`);
+      }
+      
+      return newBlock;
+    } catch (error) {
+      console.error(`🔶 [ELECTRON DB] Error inserting block:`, error);
+      throw error;
+    }
   }
 
   public updateBlock(id: string, updates: Partial<Omit<Block, 'id' | 'page_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>): Block | undefined {
-    const block = this.getBlock(id);
-    if (!block) return undefined;
-
-    const now = new Date().toISOString();
-    const updatedBlock: Block = {
-      ...block,
-      ...updates,
-      updated_at: now,
-      sync_status: 'pending'
-    };
-
-    const stmt = this.db.prepare(`
-      UPDATE blocks 
-      SET type = @type, 
-          content = @content, 
-          metadata = @metadata, 
-          order_index = @order_index, 
-          updated_at = @updated_at,
-          sync_status = @sync_status
-      WHERE id = @id
-    `);
+    console.log(`🔶 [ELECTRON DB] Updating block: ${id}`);
     
-    stmt.run(updatedBlock);
+    // Get the current block
+    const currentBlock = this.getBlock(id);
+    if (!currentBlock) {
+      console.log(`🔶 [ELECTRON DB] Block not found: ${id}`);
+      return undefined;
+    }
     
-    // Add to sync log
-    this.addToSyncLog('block', updatedBlock.id, 'update', JSON.stringify(updatedBlock));
+    console.log(`🔶 [ELECTRON DB] Updating block ${id} for page ${currentBlock.page_id}`);
     
-    return updatedBlock;
+    try {
+      const now = new Date().toISOString();
+      
+      // Merge the current block with the updates
+      const updatedBlock: Block = {
+        ...currentBlock,
+        ...updates,
+        updated_at: now,
+        sync_status: 'pending' as 'synced' | 'pending' | 'conflict'
+      };
+      
+      // Log the data being updated (truncate content for logging)
+      console.log(`🔶 [ELECTRON DB] Update data:`, {
+        ...updates,
+        content: updates.content ? `${updates.content.substring(0, 50)}...` : undefined
+      });
+      
+      // Use positional parameters for better SQLite compatibility
+      const stmt = this.db.prepare(`
+        UPDATE blocks 
+        SET type = ?, 
+            content = ?, 
+            metadata = ?, 
+            order_index = ?, 
+            updated_at = ?,
+            sync_status = ?
+        WHERE id = ?
+      `);
+      
+      stmt.run(
+        updatedBlock.type,
+        updatedBlock.content,
+        updatedBlock.metadata,
+        updatedBlock.order_index,
+        updatedBlock.updated_at,
+        updatedBlock.sync_status,
+        id
+      );
+      
+      // Add to sync log
+      this.addToSyncLog('block', id, 'update', JSON.stringify(updatedBlock));
+      
+      console.log(`🔶 [ELECTRON DB] Updated block ${id} for page ${currentBlock.page_id}`);
+      if (updatedBlock.type === 'editor') {
+        console.log(`🔶 [ELECTRON DB] Updated editor block with content length: ${updatedBlock.content ? updatedBlock.content.length : 0}`);
+      }
+      
+      return updatedBlock;
+    } catch (error) {
+      console.error(`🔶 [ELECTRON DB] Error updating block:`, error);
+      throw error;
+    }
   }
 
   public deleteBlock(id: string): void {
@@ -362,7 +492,7 @@ class DatabaseService {
   }
 
   public getPendingSyncLogs(): SyncLog[] {
-    const stmt = this.db.prepare('SELECT * FROM sync_log WHERE status = "pending" ORDER BY created_at ASC');
+    const stmt = this.db.prepare("SELECT * FROM sync_log WHERE status = 'pending' ORDER BY created_at ASC");
     return stmt.all() as SyncLog[];
   }
 
@@ -391,15 +521,13 @@ class DatabaseService {
     
     const stmt = this.db.prepare(`
       UPDATE network_status 
-      SET is_online = @is_online, 
-          last_checked = @last_checked
+      SET is_online = ?, 
+          last_checked = ?
       WHERE id = 1
     `);
     
-    stmt.run({
-      is_online: isOnline,
-      last_checked: now
-    });
+    // Convert boolean to number (1 or 0) for SQLite compatibility
+    stmt.run(isOnline ? 1 : 0, now);
   }
 
   public getNetworkStatus(): { is_online: boolean; last_checked: string } {
@@ -438,8 +566,8 @@ class DatabaseService {
 
   // Get all entities that need syncing
   public getEntitiesToSync(): { pages: Page[]; blocks: Block[] } {
-    const pagesStmt = this.db.prepare('SELECT * FROM pages WHERE sync_status = "pending"');
-    const blocksStmt = this.db.prepare('SELECT * FROM blocks WHERE sync_status = "pending"');
+    const pagesStmt = this.db.prepare("SELECT * FROM pages WHERE sync_status = 'pending'");
+    const blocksStmt = this.db.prepare("SELECT * FROM blocks WHERE sync_status = 'pending'");
     
     return {
       pages: pagesStmt.all() as Page[],

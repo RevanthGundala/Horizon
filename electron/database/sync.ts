@@ -1,11 +1,13 @@
 import { ipcMain, app } from 'electron';
 import DatabaseService, { Block, Page, SyncLog } from './index';
+import AuthService from '../auth';
 
 // Define the API base URL
-const API_URL = process.env.VITE_API_URL ;
+const API_URL = process.env.VITE_API_URL || 'https://vihy6489c7.execute-api.us-west-2.amazonaws.com/stage';
 
 class SyncService {
   private db: DatabaseService;
+  private auth: AuthService;
   private syncInterval: NodeJS.Timeout | null = null;
   private isInitialized = false;
   private isOnline = false;
@@ -13,6 +15,7 @@ class SyncService {
 
   private constructor() {
     this.db = DatabaseService.getInstance();
+    this.auth = AuthService.getInstance();
     this.setupIpcHandlers();
   }
 
@@ -32,15 +35,15 @@ class SyncService {
     // Set up periodic sync (every 30 seconds)
     this.syncInterval = setInterval(() => {
       this.checkNetworkStatus();
-      if (this.isOnline) {
+      if (this.isOnline && this.auth.isAuthenticated()) {
         this.syncWithServer();
       }
     }, 30000);
     
     this.isInitialized = true;
     
-    // Sync on app start if online
-    if (this.isOnline) {
+    // Sync on app start if online and authenticated
+    if (this.isOnline && this.auth.isAuthenticated()) {
       this.syncWithServer();
     }
   }
@@ -86,6 +89,7 @@ class SyncService {
       this.isOnline = response.ok;
     } catch (error) {
       this.isOnline = false;
+      console.log('Network check failed, device appears to be offline');
     }
     
     // Update database with current status
@@ -97,7 +101,18 @@ class SyncService {
       return { success: false, error: 'Offline' };
     }
     
+    // Check if user is authenticated
+    if (!this.auth.isAuthenticated()) {
+      return { success: false, error: 'Not authenticated' };
+    }
+    
     try {
+      // Get access token (cookie)
+      const accessToken = this.auth.getAccessToken();
+      if (!accessToken) {
+        return { success: false, error: 'No access token available' };
+      }
+      
       // Get all pending sync logs
       const pendingSyncLogs = this.db.getPendingSyncLogs();
       
@@ -118,6 +133,19 @@ class SyncService {
 
   private async processSyncLog(log: SyncLog): Promise<void> {
     try {
+      // Check authentication first
+      if (!this.auth.isAuthenticated()) {
+        console.log('Not authenticated, skipping sync log processing');
+        return;
+      }
+      
+      // Get access token
+      const accessToken = this.auth.getAccessToken();
+      if (!accessToken) {
+        console.log('No access token available, skipping sync log processing');
+        return;
+      }
+      
       let endpoint = '';
       let method = 'POST';
       const payload = JSON.parse(log.payload);
@@ -143,48 +171,39 @@ class SyncService {
         }
       }
       
-      // Skip if no valid endpoint
-      if (!endpoint) {
-        this.db.updateSyncLogStatus(log.id, 'error', 'Invalid entity type or action');
-        return;
-      }
-      
-      // Prepare request
-      const options: any = {
+      // Send request to API
+      const response = await fetch(`${API_URL}${endpoint}`, {
         method,
-        headers: { 'Content-Type': 'application/json' },
-      };
-      
-      // Add body for non-DELETE requests
-      if (method !== 'DELETE') {
-        options.body = JSON.stringify(payload);
-      }
-      
-      // Send request
-      const response = await fetch(`${API_URL}${endpoint}`, options);
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': accessToken
+        },
+        body: method !== 'DELETE' ? JSON.stringify(payload) : undefined
+      });
       
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API error: ${response.status} ${errorText}`);
-      }
-      
-      // For non-DELETE requests, get the response data
-      if (method !== 'DELETE') {
-        const data = await response.json();
-        const entity = log.entity_type === 'page' ? data.page : data.block;
-        
-        if (entity) {
-          // Mark entity as synced
-          this.db.markEntityAsSynced(
-            log.entity_type,
-            log.entity_id,
-            entity.updated_at
-          );
+        // Handle authentication errors specifically
+        if (response.status === 401 || response.status === 302) {
+          console.log('Authentication error during sync log processing, user needs to log in');
+          return;
         }
+        
+        const errorText = await response.text();
+        console.error(`API Error (${response.status}): ${errorText}`);
+        throw new Error(`API request failed: ${response.status} ${response.statusText}`);
       }
       
-      // Mark sync log as successful
+      // Update sync log status to success
       this.db.updateSyncLogStatus(log.id, 'success');
+      
+      // If successful, mark entity as synced
+      if (response.status !== 204) { // No content
+        const data = await response.json();
+        const updatedAt = data.updatedAt || new Date().toISOString();
+        this.db.markEntityAsSynced(log.entity_type, log.entity_id, updatedAt);
+      } else {
+        this.db.markEntityAsSynced(log.entity_type, log.entity_id, new Date().toISOString());
+      }
     } catch (error) {
       console.error(`Error processing sync log ${log.id}:`, error);
       this.db.updateSyncLogStatus(log.id, 'error', String(error));
@@ -192,35 +211,76 @@ class SyncService {
   }
 
   private async pullUpdatesFromServer(): Promise<void> {
+    console.log('Pulling updates from server:', API_URL);
+    
     try {
-      // Get all pages
+      // Check authentication first
+      if (!this.auth.isAuthenticated()) {
+        console.log('Not authenticated, skipping sync');
+        return;
+      }
+      
+      // Get access token
+      const accessToken = this.auth.getAccessToken();
+      if (!accessToken) {
+        console.log('No access token available, skipping sync');
+        return;
+      }
+      
+      // Fetch pages from server
       const pagesResponse = await fetch(`${API_URL}/api/pages`, {
         method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': accessToken
+        }
       });
       
       if (!pagesResponse.ok) {
-        throw new Error(`Failed to fetch pages: ${pagesResponse.statusText}`);
+        // Handle authentication errors specifically
+        if (pagesResponse.status === 401 || pagesResponse.status === 302) {
+          console.log('Authentication error during sync, user needs to log in');
+          return;
+        }
+        
+        const errorText = await pagesResponse.text();
+        console.error(`API Error (${pagesResponse.status}): ${errorText}`);
+        throw new Error(`Failed to fetch pages: ${pagesResponse.status} ${pagesResponse.statusText}`);
       }
       
-      const pagesData = await pagesResponse.json();
+      // Check if the response is valid JSON
+      let pagesData;
+      try {
+        pagesData = await pagesResponse.json();
+      } catch (error) {
+        console.error('Failed to parse API response:', error);
+        throw new Error('Invalid API response format');
+      }
+      
+      // Validate the response structure
+      if (!pagesData || !Array.isArray(pagesData.pages)) {
+        console.error('Unexpected API response structure:', pagesData);
+        throw new Error('Unexpected API response structure');
+      }
+      
       const serverPages = pagesData.pages as Page[];
       
-      // Process pages
+      // Get all local pages
+      const localPages = this.db.getPages();
+      const localPagesMap = new Map<string, Page>();
+      
+      localPages.forEach(page => {
+        localPagesMap.set(page.id, page);
+      });
+      
+      // Process server pages
       for (const serverPage of serverPages) {
-        const localPage = this.db.getPage(serverPage.id);
+        const localPage = localPagesMap.get(serverPage.id);
         
         if (!localPage) {
           // New page from server, create locally
           const newPage = {
-            id: serverPage.id,
-            title: serverPage.title,
-            parent_id: serverPage.parent_id,
-            user_id: serverPage.user_id,
-            is_favorite: serverPage.is_favorite,
-            type: serverPage.type,
-            created_at: serverPage.created_at,
-            updated_at: serverPage.updated_at,
+            ...serverPage,
             sync_status: 'synced' as const,
             server_updated_at: serverPage.updated_at
           };
@@ -232,6 +292,9 @@ class SyncService {
           `);
           
           stmt.run(newPage);
+          
+          // Pull blocks for this page
+          await this.pullBlocksForPage(serverPage.id);
         } else if (localPage.sync_status !== 'pending') {
           // Page exists locally and is not pending sync
           // Check if server version is newer
@@ -260,11 +323,22 @@ class SyncService {
             `);
             
             stmt.run(updatedPage);
+            
+            // Pull blocks for this page
+            await this.pullBlocksForPage(serverPage.id);
           }
         }
         
-        // Now fetch blocks for this page
-        await this.pullBlocksForPage(serverPage.id);
+        // Remove from map to track what's been processed
+        localPagesMap.delete(serverPage.id);
+      }
+      
+      // Any remaining pages in the map don't exist on the server
+      // If they're not pending sync, they were deleted on the server
+      for (const [id, page] of localPagesMap.entries()) {
+        if (page.sync_status !== 'pending') {
+          this.db.deletePage(id);
+        }
       }
     } catch (error) {
       console.error('Error pulling updates from server:', error);
@@ -273,16 +347,55 @@ class SyncService {
 
   private async pullBlocksForPage(pageId: string): Promise<void> {
     try {
-      const blocksResponse = await fetch(`${API_URL}/api/blocks?pageId=${pageId}`, {
+      // Check authentication first
+      if (!this.auth.isAuthenticated()) {
+        console.log('Not authenticated, skipping block sync');
+        return;
+      }
+      
+      // Get access token
+      const accessToken = this.auth.getAccessToken();
+      if (!accessToken) {
+        console.log('No access token available, skipping block sync');
+        return;
+      }
+      
+      // Fetch blocks for this page from the server
+      const blocksResponse = await fetch(`${API_URL}/api/pages/${pageId}/blocks`, {
         method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': accessToken
+        }
       });
       
       if (!blocksResponse.ok) {
-        throw new Error(`Failed to fetch blocks: ${blocksResponse.statusText}`);
+        // Handle authentication errors specifically
+        if (blocksResponse.status === 401 || blocksResponse.status === 302) {
+          console.log('Authentication error during block sync, user needs to log in');
+          return;
+        }
+        
+        const errorText = await blocksResponse.text();
+        console.error(`API Error (${blocksResponse.status}): ${errorText}`);
+        throw new Error(`Failed to fetch blocks: ${blocksResponse.status} ${blocksResponse.statusText}`);
       }
       
-      const blocksData = await blocksResponse.json();
+      // Check if the response is valid JSON
+      let blocksData;
+      try {
+        blocksData = await blocksResponse.json();
+      } catch (error) {
+        console.error('Failed to parse API response:', error);
+        throw new Error('Invalid API response format');
+      }
+      
+      // Validate the response structure
+      if (!blocksData || !Array.isArray(blocksData.blocks)) {
+        console.error('Unexpected API response structure:', blocksData);
+        throw new Error('Unexpected API response structure');
+      }
+      
       const serverBlocks = blocksData.blocks as Block[];
       
       // Get local blocks for this page

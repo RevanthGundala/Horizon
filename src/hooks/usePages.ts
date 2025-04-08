@@ -1,15 +1,4 @@
 import { useQuery, useMutation, useQueryClient, UseQueryOptions } from '@tanstack/react-query';
-import { 
-  Page as ApiPage, 
-  getPages as fetchPages,
-  getPage as fetchPage,
-  createPage as createPageApi,
-  updatePage as updatePageApi,
-  deletePage as deletePageApi,
-  CreatePageRequest,
-  UpdatePageRequest
-} from '../utils/api/pages';
-import { Block as ApiBlock } from '../utils/api/blocks';
 import { Page, Block, dbPages, dbSync } from '../utils/db';
 
 // Query keys

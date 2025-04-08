@@ -1,9 +1,12 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'path';
-import https from 'https';
+import fs from 'fs';
 import DatabaseService from './database';
 import SyncService from './database/sync';
 import { setupDatabaseIpcHandlers } from './database/ipc-handlers';
+import AuthService from './auth';
+import { setupAuthIpcHandlers } from './auth/ipc-handlers';
+import { setupProtocolHandler } from './auth/protocol-handler';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 let squirrelStartup = false;
@@ -20,39 +23,7 @@ if (squirrelStartup) {
 // Initialize database and sync services
 let db: DatabaseService;
 let syncService: SyncService;
-
-// Handle API fetch requests from the renderer process
-ipcMain.handle('fetch-api', async (event, url) => {
-  console.log('Fetching API from main process:', url);
-  
-  return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
-      let data = '';
-      
-      // A chunk of data has been received
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-      
-      // The whole response has been received
-      res.on('end', () => {
-        try {
-          const parsedData = JSON.parse(data);
-          resolve({
-            status: res.statusCode,
-            headers: res.headers,
-            data: parsedData
-          });
-        } catch (e: unknown) {
-          const errorMessage = e instanceof Error ? e.message : 'Unknown error parsing JSON';
-          reject(new Error(`Error parsing JSON: ${errorMessage}`));
-        }
-      });
-    }).on('error', (err) => {
-      reject(new Error(`Error making request: ${err.message}`));
-    });
-  });
-});
+let authService: AuthService;
 
 const createWindow = () => {
   // Create the browser window.
@@ -88,6 +59,63 @@ const createWindow = () => {
   });
 };
 
+// Set up logging to file
+const setupLogging = () => {
+  const userDataPath = app.getPath('userData');
+  const logDir = path.join(userDataPath, 'logs');
+  
+  // Create logs directory if it doesn't exist
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+  }
+  
+  const logPath = path.join(logDir, `electron-${new Date().toISOString().replace(/:/g, '-')}.log`);
+  console.log(`📝 Electron logs will be saved to: ${logPath}`);
+  
+  // Create a write stream
+  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+  
+  // Store the original console methods
+  const originalConsoleLog = console.log;
+  const originalConsoleError = console.error;
+  const originalConsoleWarn = console.warn;
+  
+  // Override console methods to write to file
+  console.log = function(...args) {
+    const message = args.map(arg => 
+      typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg
+    ).join(' ');
+    
+    logStream.write(`[LOG] ${new Date().toISOString()} - ${message}\n`);
+    originalConsoleLog.apply(console, args);
+  };
+  
+  console.error = function(...args) {
+    const message = args.map(arg => 
+      typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg
+    ).join(' ');
+    
+    logStream.write(`[ERROR] ${new Date().toISOString()} - ${message}\n`);
+    originalConsoleError.apply(console, args);
+  };
+  
+  console.warn = function(...args) {
+    const message = args.map(arg => 
+      typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg
+    ).join(' ');
+    
+    logStream.write(`[WARN] ${new Date().toISOString()} - ${message}\n`);
+    originalConsoleWarn.apply(console, args);
+  };
+  
+  // Clean up on app quit
+  app.on('will-quit', () => {
+    logStream.end();
+  });
+  
+  return logPath;
+};
+
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
@@ -95,8 +123,21 @@ app.whenReady().then(() => {
   // Initialize database
   db = DatabaseService.getInstance();
   
+  // Initialize auth service
+  authService = AuthService.getInstance();
+  
+  // Set up protocol handler for OAuth
+  setupProtocolHandler();
+  
+  // Set up logging
+  const logPath = setupLogging();
+  console.log('Electron app starting...');
+
   // Set up IPC handlers for database operations
   setupDatabaseIpcHandlers();
+  
+  // Set up IPC handlers for authentication operations
+  setupAuthIpcHandlers();
   
   // Initialize sync service
   syncService = SyncService.getInstance();
