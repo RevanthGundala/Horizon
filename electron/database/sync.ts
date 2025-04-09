@@ -1,5 +1,5 @@
 import { ipcMain, app } from 'electron';
-import DatabaseService, { Block, Page, SyncLog } from './index';
+import DatabaseService, { Block, Note, Folder, SyncLog } from './index';
 import AuthService from '../auth';
 
 // Define the API base URL
@@ -149,8 +149,8 @@ class SyncService {
       const payload = JSON.parse(log.payload);
       
       // Determine endpoint and method based on entity type and action
-      if (log.entity_type === 'page') {
-        endpoint = '/api/pages';
+      if (log.entity_type === 'note') {
+        endpoint = '/api/notes';
         if (log.action === 'update') {
           endpoint += `/${log.entity_id}`;
           method = 'PUT';
@@ -160,6 +160,15 @@ class SyncService {
         }
       } else if (log.entity_type === 'block') {
         endpoint = '/api/blocks';
+        if (log.action === 'update') {
+          endpoint += `/${log.entity_id}`;
+          method = 'PUT';
+        } else if (log.action === 'delete') {
+          endpoint += `/${log.entity_id}`;
+          method = 'DELETE';
+        }
+      } else if (log.entity_type === 'folder') {
+        endpoint = '/api/folders';
         if (log.action === 'update') {
           endpoint += `/${log.entity_id}`;
           method = 'PUT';
@@ -261,11 +270,11 @@ class SyncService {
         throw new Error('Unexpected API response structure');
       }
       
-      const serverPages = pagesData.pages as Page[];
+      const serverPages = pagesData.pages as Note[];
       
       // Get all local pages
-      const localPages = this.db.getPages();
-      const localPagesMap = new Map<string, Page>();
+      const localPages = this.db.getNotes();
+      const localPagesMap = new Map<string, Note>();
       
       localPages.forEach(page => {
         localPagesMap.set(page.id, page);
@@ -335,7 +344,7 @@ class SyncService {
       // If they're not pending sync, they were deleted on the server
       for (const [id, page] of localPagesMap.entries()) {
         if (page.sync_status !== 'pending') {
-          this.db.deletePage(id);
+          this.db.deleteNote(id);
         }
       }
     } catch (error) {
@@ -467,6 +476,90 @@ class SyncService {
       }
     } catch (error) {
       console.error(`Error pulling blocks for page ${pageId}:`, error);
+    }
+  }
+
+  public async syncFolders(): Promise<void> {
+    try {
+      // Get server folders
+      const response = await fetch(`${API_URL}/api/folders`, {
+        headers: {
+          'Authorization': `Bearer ${this.auth.getAccessToken()}`
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch folders: ${response.statusText}`);
+      }
+      
+      const foldersData = await response.json();
+      
+      if (!foldersData || !foldersData.folders) {
+        throw new Error('Unexpected API response structure');
+      }
+      
+      const serverFolders = foldersData.folders as Folder[];
+      
+      // Get all local folders
+      const localFolders = this.db.getFolders();
+      const localFoldersMap = new Map<string, Folder>();
+      
+      localFolders.forEach(folder => {
+        localFoldersMap.set(folder.id, folder);
+      });
+      
+      // Process server folders
+      for (const serverFolder of serverFolders) {
+        const localFolder = localFoldersMap.get(serverFolder.id);
+        
+        if (localFolder) {
+          // Update local folder with server data
+          if (new Date(serverFolder.updated_at) > new Date(localFolder.updated_at)) {
+            this.db.updateFolder(serverFolder.id, {
+              name: serverFolder.name,
+              is_favorite: serverFolder.is_favorite
+            });
+          }
+          
+          localFoldersMap.delete(serverFolder.id);
+        } else {
+          // Create new folder from server
+          this.db.createFolder(serverFolder);
+        }
+      }
+      
+      // Delete local folders that don't exist on server
+      for (const [id, folder] of localFoldersMap.entries()) {
+        if (folder.sync_status !== 'pending') {
+          this.db.deleteFolder(id);
+        }
+      }
+    } catch (error) {
+      console.error('Error syncing folders:', error);
+      throw error;
+    }
+  }
+
+  public async syncNotes(): Promise<void> {
+    try {
+      // First sync notes
+      await this.pullUpdatesFromServer();
+    } catch (error) {
+      console.error('Error syncing notes:', error);
+      throw error;
+    }
+  }
+
+  public async syncBlocks(): Promise<void> {
+    try {
+      // Then sync blocks
+      const localPages = this.db.getNotes();
+      for (const page of localPages) {
+        await this.pullBlocksForPage(page.id);
+      }
+    } catch (error) {
+      console.error('Error syncing blocks:', error);
+      throw error;
     }
   }
 

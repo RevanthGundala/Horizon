@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
-import DatabaseService, { Block, Page } from './index';
+import DatabaseService, { Block, Folder, Note } from './index';
 import SyncService from './sync';
 import AuthService from '../auth';
 
@@ -23,66 +23,78 @@ export function setupDatabaseIpcHandlers(): void {
     return authService.getUserId();
   });
 
-  // Pages
-  ipcMain.handle('db:get-pages', (_event, parentId?: string) => {
-    return db.getPages(parentId);
+  // Folders
+  ipcMain.handle('db:get-folders', (_event, workspaceId?: string) => {
+    return db.getFolders(workspaceId);
   });
 
-  ipcMain.handle('db:get-page', (_event, id: string) => {
-    const page = db.getPage(id);
-    const blocks = page ? db.getBlocks(id) : [];
-    return { page, blocks };
+  ipcMain.handle('db:get-folder', (_event, id: string) => {
+    return db.getFolder(id);
   });
 
-  ipcMain.handle('db:create-page', (_event, pageData: Omit<Page, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>) => {
+  ipcMain.handle('db:create-folder', (_event, folderData: Omit<Folder, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>) => {
     try {
-      // Use the provided id or generate a new one
-      const id = pageData.id || uuidv4();
+      const id = folderData.id || uuidv4();
+      const userId = authService.getUserId() || folderData.user_id || 'anonymous';
       
-      console.log(' [ELECTRON IPC] Received page data:', JSON.stringify(pageData, null, 2));
-      
-      // Get the current user ID from auth service
-      const authUserId = authService.getUserId();
-      console.log(' [ELECTRON IPC] Auth service user ID:', authUserId);
-      console.log(' [ELECTRON IPC] Page data user ID:', pageData.user_id);
-      
-      // Ensure we have a valid user_id - never allow empty string
-      let userId = pageData.user_id;
-      if (!userId || userId.trim() === '') {
-        userId = authUserId || 'anonymous';
-        console.log(' [ELECTRON IPC] Using fallback user ID:', userId);
-      }
-      
-      // Create a simplified page object with only the essential fields
-      // Ensure is_favorite is a proper boolean
-      const simplifiedPage = {
+      const folder = {
+        ...folderData,
         id,
-        title: pageData.title || 'Untitled Page',
-        parent_id: pageData.parent_id,
-        user_id: userId,
-        is_favorite: pageData.is_favorite,
-        type: pageData.type
+        user_id: userId
       };
       
-      console.log(' [ELECTRON IPC] Creating page with data:', JSON.stringify(simplifiedPage, null, 2));
-      
-      // Create the page in the database
-      const result = db.createPage(simplifiedPage);
-      console.log(' [ELECTRON IPC] Page created successfully:', result.id);
-      
-      return result;
+      return db.createFolder(folder);
     } catch (error) {
-      console.error(' [ELECTRON IPC] Error creating page:', error);
+      console.error('Error creating folder:', error);
       throw error;
     }
   });
 
-  ipcMain.handle('db:update-page', (_event, id: string, updates: Partial<Omit<Page, 'id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>) => {
-    return db.updatePage(id, updates);
+  ipcMain.handle('db:update-folder', (_event, id: string, updates: Partial<Omit<Folder, 'id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>) => {
+    return db.updateFolder(id, updates);
   });
 
-  ipcMain.handle('db:delete-page', (_event, id: string) => {
-    db.deletePage(id);
+  ipcMain.handle('db:delete-folder', (_event, id: string) => {
+    db.deleteFolder(id);
+    return { success: true };
+  });
+
+  // Notes
+  ipcMain.handle('db:get-notes', (_event, parentId?: string) => {
+    return db.getNotes(parentId);
+  });
+
+  ipcMain.handle('db:get-note', (_event, id: string) => {
+    const note = db.getNote(id);
+    const blocks = note ? db.getBlocks(id) : [];
+    return { note, blocks };
+  });
+
+  ipcMain.handle('db:create-note', (_event, noteData: Omit<Note, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>) => {
+    try {
+      const id = noteData.id || uuidv4();
+      const userId = authService.getUserId() || noteData.user_id || 'anonymous';
+      
+      const note = {
+        ...noteData,
+        id,
+        user_id: userId,
+        folder_id: noteData.folder_id || null
+      };
+      
+      return db.createNote(note);
+    } catch (error) {
+      console.error('Error creating note:', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('db:update-note', (_event, id: string, updates: Partial<Omit<Note, 'id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>) => {
+    return db.updateNote(id, updates);
+  });
+
+  ipcMain.handle('db:delete-note', (_event, id: string) => {
+    db.deleteNote(id);
     return { success: true };
   });
 
@@ -120,7 +132,7 @@ export function setupDatabaseIpcHandlers(): void {
       // Create a sanitized block object with only the fields that exist in the database schema
       const sanitizedBlockData = {
         id,
-        page_id: blockData.page_id,
+        note_id: blockData.note_id,
         user_id: userId,
         type: blockData.type,
         content: blockData.content,
@@ -227,8 +239,8 @@ export function setupDatabaseIpcHandlers(): void {
 
   // Get pending sync count
   ipcMain.handle('db:get-pending-sync-count', () => {
-    const { pages, blocks } = db.getEntitiesToSync();
-    return pages.length + blocks.length;
+    const { notes, blocks } = db.getEntitiesToSync();
+    return notes.length + blocks.length;
   });
 
   // Chat

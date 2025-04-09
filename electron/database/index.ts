@@ -4,10 +4,32 @@ import { app } from 'electron';
 import fs from 'fs';
 
 // Types
-export interface Page {
+export interface Workspace {
+  id: string;
+  user_id: string;
+  name: string;
+  is_favorite: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Folder {
+  id: string;
+  workspace_id: string;
+  user_id: string;
+  name: string;
+  is_favorite: boolean;
+  created_at: string;
+  updated_at: string;
+  sync_status: 'synced' | 'pending' | 'conflict';
+  server_updated_at: string | null;
+}
+
+export interface Note {
   id: string;
   title: string;
-  parent_id: string | null;
+  workspace_id: string;
+  folder_id: string | null;
   user_id: string;
   is_favorite: boolean;
   type: string | null;
@@ -19,7 +41,7 @@ export interface Page {
 
 export interface Block {
   id: string;
-  page_id: string;
+  note_id: string;
   user_id: string;
   type: string;
   content: string | null;
@@ -33,7 +55,7 @@ export interface Block {
 
 export interface SyncLog {
   id: string;
-  entity_type: 'page' | 'block';
+  entity_type: 'note' | 'block' | 'folder';
   entity_id: string;
   action: 'create' | 'update' | 'delete';
   status: 'pending' | 'success' | 'error';
@@ -81,19 +103,50 @@ class DatabaseService {
   }
 
   private initSchema(): void {
-    // Create pages table
+    // Create workspaces table
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS pages (
+      CREATE TABLE IF NOT EXISTS workspaces (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        is_favorite INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    // Create folders table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS folders (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        is_favorite INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_status TEXT NOT NULL DEFAULT 'synced',
+        server_updated_at TEXT,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+      );
+    `);
+
+    // Create notes table (previously pages)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS notes (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
-        parent_id TEXT,
+        workspace_id TEXT,
+        folder_id TEXT,
         user_id TEXT NOT NULL,
         is_favorite INTEGER DEFAULT 0,
         type TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         sync_status TEXT NOT NULL DEFAULT 'synced',
-        server_updated_at TEXT
+        server_updated_at TEXT,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+        FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE
       );
     `);
 
@@ -101,7 +154,7 @@ class DatabaseService {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS blocks (
         id TEXT PRIMARY KEY,
-        page_id TEXT NOT NULL,
+        note_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
         type TEXT NOT NULL,
         content TEXT,
@@ -111,7 +164,7 @@ class DatabaseService {
         updated_at TEXT NOT NULL,
         sync_status TEXT NOT NULL DEFAULT 'synced',
         server_updated_at TEXT,
-        FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+        FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
       );
     `);
 
@@ -131,70 +184,314 @@ class DatabaseService {
     `);
   }
 
-  // Pages CRUD operations
-  public getPages(parentId?: string): Page[] {
-    const query = parentId 
-      ? 'SELECT * FROM pages WHERE parent_id = ? ORDER BY updated_at DESC'
-      : 'SELECT * FROM pages WHERE parent_id IS NULL ORDER BY updated_at DESC';
-    
-    const stmt = this.db.prepare(query);
-    return parentId ? stmt.all(parentId) as Page[] : stmt.all() as Page[];
+  // Workspaces CRUD operations
+  public getWorkspaces(): Workspace[] {
+    const stmt = this.db.prepare('SELECT * FROM workspaces ORDER BY updated_at DESC');
+    return stmt.all() as Workspace[];
   }
 
-  public getPage(id: string): Page | undefined {
-    const stmt = this.db.prepare('SELECT * FROM pages WHERE id = ?');
-    return stmt.get(id) as Page | undefined;
+  public getWorkspace(id: string): Workspace | undefined {
+    const stmt = this.db.prepare('SELECT * FROM workspaces WHERE id = ?');
+    return stmt.get(id) as Workspace | undefined;
   }
 
-  public createPage(page: Omit<Page, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>): Page {
-    console.log(`🔶 [ELECTRON DB] Creating page with ID: ${page.id}, title: ${page.title}`);
-    console.log(`🔶 [ELECTRON DB] User ID for page: ${page.user_id}`);
+  public createWorkspace(workspace: Omit<Workspace, 'created_at' | 'updated_at'>): Workspace {
+    console.log(`🔶 [ELECTRON DB] Creating workspace with ID: ${workspace.id}, name: ${workspace.name}`);
+    console.log(`🔶 [ELECTRON DB] User ID for workspace: ${workspace.user_id}`);
     
     const now = new Date().toISOString();
     
     try {
       // Convert boolean to integer for SQLite
-      const is_favorite_value = page.is_favorite ? 1 : 0;
+      const is_favorite_value = workspace.is_favorite ? 1 : 0;
       
       // Log the exact data we're about to insert
-      console.log(`🔶 [ELECTRON DB] Page data before insert:`, {
-        id: page.id,
-        title: page.title,
-        parent_id: page.parent_id,
-        user_id: page.user_id,
+      console.log(`🔶 [ELECTRON DB] Workspace data before insert:`, {
+        id: workspace.id,
+        user_id: workspace.user_id,
+        name: workspace.name,
         is_favorite: is_favorite_value, // Show the integer value
-        type: page.type
       });
       
       // Use positional parameters for better SQLite compatibility
       const stmt = this.db.prepare(`
-        INSERT INTO pages (id, title, parent_id, user_id, is_favorite, type, created_at, updated_at, sync_status, server_updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO workspaces (id, user_id, name, is_favorite, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
       `);
       
       stmt.run(
-        page.id,
-        page.title,
-        page.parent_id,
-        page.user_id,
+        workspace.id,
+        workspace.user_id,
+        workspace.name,
         is_favorite_value, // Use the integer value
-        page.type || 'note',
+        now,
+        now
+      );
+      
+      console.log(`🔶 [ELECTRON DB] Successfully inserted workspace with ID: ${workspace.id}`);
+      
+      // Create the complete Workspace object for the return value
+      const newWorkspace: Workspace = {
+        id: workspace.id,
+        user_id: workspace.user_id,
+        name: workspace.name,
+        is_favorite: Boolean(is_favorite_value), // Convert back to boolean for TypeScript
+        created_at: now,
+        updated_at: now
+      };
+      
+      // Add to sync log
+      this.addToSyncLog('workspace', newWorkspace.id, 'create', JSON.stringify(newWorkspace));
+      
+      return newWorkspace;
+    } catch (error) {
+      console.error(`🔶 [ELECTRON DB] Error inserting workspace:`, error);
+      throw error;
+    }
+  }
+
+  public updateWorkspace(id: string, updates: Partial<Omit<Workspace, 'id' | 'created_at' | 'updated_at'>>): Workspace | undefined {
+    const workspace = this.getWorkspace(id);
+    if (!workspace) return undefined;
+
+    const now = new Date().toISOString();
+    
+    // Convert boolean to number for SQLite compatibility if present
+    const is_favorite_value = updates.is_favorite !== undefined ? (updates.is_favorite ? 1 : 0) : (workspace.is_favorite ? 1 : 0);
+    
+    const stmt = this.db.prepare(`
+      UPDATE workspaces 
+      SET name = ?, 
+          is_favorite = ?, 
+          updated_at = ?
+      WHERE id = ?
+    `);
+    
+    stmt.run(
+      updates.name || workspace.name,
+      is_favorite_value,
+      now, // updated_at
+      id
+    );
+    
+    const updatedWorkspace: Workspace = {
+      ...workspace,
+      ...updates,
+      updated_at: now
+    };
+    
+    // Add to sync log
+    this.addToSyncLog('workspace', updatedWorkspace.id, 'update', JSON.stringify(updatedWorkspace));
+    
+    return updatedWorkspace;
+  }
+
+  public deleteWorkspace(id: string): void {
+    const workspace = this.getWorkspace(id);
+    if (!workspace) return;
+
+    // Add to sync log before deleting
+    this.addToSyncLog('workspace', id, 'delete', JSON.stringify({ id }));
+    
+    const stmt = this.db.prepare('DELETE FROM workspaces WHERE id = ?');
+    stmt.run(id);
+  }
+
+  // Folders CRUD operations
+  public getFolders(workspaceId?: string): Folder[] {
+    const query = workspaceId 
+      ? 'SELECT * FROM folders WHERE workspace_id = ? ORDER BY updated_at DESC'
+      : 'SELECT * FROM folders WHERE workspace_id IS NULL ORDER BY updated_at DESC';
+    
+    const stmt = this.db.prepare(query);
+    return workspaceId ? stmt.all(workspaceId) as Folder[] : stmt.all() as Folder[];
+  }
+
+  public getFolder(id: string): Folder | undefined {
+    const stmt = this.db.prepare('SELECT * FROM folders WHERE id = ?');
+    return stmt.get(id) as Folder | undefined;
+  }
+
+  public createFolder(folder: Omit<Folder, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>): Folder {
+    console.log(`🔶 [ELECTRON DB] Creating folder with ID: ${folder.id}, name: ${folder.name}`);
+    console.log(`🔶 [ELECTRON DB] User ID for folder: ${folder.user_id}`);
+    
+    const now = new Date().toISOString();
+    
+    try {
+      // Convert boolean to integer for SQLite
+      const is_favorite_value = folder.is_favorite ? 1 : 0;
+      
+      // Log the exact data we're about to insert
+      console.log(`🔶 [ELECTRON DB] Folder data before insert:`, {
+        id: folder.id,
+        workspace_id: folder.workspace_id,
+        user_id: folder.user_id,
+        name: folder.name,
+        is_favorite: is_favorite_value, // Show the integer value
+      });
+      
+      // Use positional parameters for better SQLite compatibility
+      const stmt = this.db.prepare(`
+        INSERT INTO folders (id, workspace_id, user_id, name, is_favorite, created_at, updated_at, sync_status, server_updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      
+      stmt.run(
+        folder.id,
+        folder.workspace_id,
+        folder.user_id,
+        folder.name,
+        is_favorite_value, // Use the integer value
+        now,
+        now,
+        'synced', // Default to synced since we're creating it
+        null
+      );
+      
+      console.log(`🔶 [ELECTRON DB] Successfully inserted folder with ID: ${folder.id}`);
+      
+      // Create the complete Folder object for the return value
+      const newFolder: Folder = {
+        id: folder.id,
+        workspace_id: folder.workspace_id,
+        user_id: folder.user_id,
+        name: folder.name,
+        is_favorite: Boolean(is_favorite_value), // Convert back to boolean for TypeScript
+        created_at: now,
+        updated_at: now,
+        sync_status: 'synced', // Default to synced since we're creating it
+        server_updated_at: null
+      };
+      
+      // Add to sync log
+      this.addToSyncLog('folder', newFolder.id, 'create', JSON.stringify(newFolder));
+      
+      return newFolder;
+    } catch (error) {
+      console.error(`🔶 [ELECTRON DB] Error inserting folder:`, error);
+      throw error;
+    }
+  }
+
+  public updateFolder(id: string, updates: Partial<Omit<Folder, 'id' | 'created_at' | 'updated_at'>>): Folder | undefined {
+    const folder = this.getFolder(id);
+    if (!folder) return undefined;
+
+    const now = new Date().toISOString();
+    
+    // Convert boolean to number for SQLite compatibility if present
+    const is_favorite_value = updates.is_favorite !== undefined ? (updates.is_favorite ? 1 : 0) : (folder.is_favorite ? 1 : 0);
+    
+    const stmt = this.db.prepare(`
+      UPDATE folders 
+      SET name = ?, 
+          is_favorite = ?, 
+          updated_at = ?,
+          sync_status = ?
+      WHERE id = ?
+    `);
+    
+    stmt.run(
+      updates.name || folder.name,
+      is_favorite_value,
+      now, // updated_at
+      'pending',
+      id
+    );
+    
+    const updatedFolder: Folder = {
+      ...folder,
+      ...updates,
+      updated_at: now
+    };
+    
+    // Add to sync log
+    this.addToSyncLog('folder', updatedFolder.id, 'update', JSON.stringify(updatedFolder));
+    
+    return updatedFolder;
+  }
+
+  public deleteFolder(id: string): void {
+    const folder = this.getFolder(id);
+    if (!folder) return;
+
+    // Add to sync log before deleting
+    this.addToSyncLog('folder', id, 'delete', JSON.stringify({ id }));
+    
+    const stmt = this.db.prepare('DELETE FROM folders WHERE id = ?');
+    stmt.run(id);
+  }
+
+  // Notes CRUD operations
+  public getNotes(workspaceId?: string, folderId?: string): Note[] {
+    const query = workspaceId 
+      ? 'SELECT * FROM notes WHERE workspace_id = ? ORDER BY updated_at DESC'
+      : folderId 
+        ? 'SELECT * FROM notes WHERE folder_id = ? ORDER BY updated_at DESC'
+        : 'SELECT * FROM notes WHERE workspace_id IS NULL AND folder_id IS NULL ORDER BY updated_at DESC';
+    
+    const stmt = this.db.prepare(query);
+    return workspaceId ? stmt.all(workspaceId) as Note[] : folderId ? stmt.all(folderId) as Note[] : stmt.all() as Note[];
+  }
+
+  public getNote(id: string): Note | undefined {
+    const stmt = this.db.prepare('SELECT * FROM notes WHERE id = ?');
+    return stmt.get(id) as Note | undefined;
+  }
+
+  public createNote(note: Omit<Note, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>): Note {
+    console.log(`🔶 [ELECTRON DB] Creating note with ID: ${note.id}, title: ${note.title}`);
+    console.log(`🔶 [ELECTRON DB] User ID for note: ${note.user_id}`);
+    
+    const now = new Date().toISOString();
+    
+    try {
+      // Convert boolean to integer for SQLite
+      const is_favorite_value = note.is_favorite ? 1 : 0;
+      
+      // Log the exact data we're about to insert
+      console.log(`🔶 [ELECTRON DB] Note data before insert:`, {
+        id: note.id,
+        title: note.title,
+        workspace_id: note.workspace_id,
+        folder_id: note.folder_id,
+        user_id: note.user_id,
+        is_favorite: is_favorite_value, // Show the integer value
+        type: note.type
+      });
+      
+      // Use positional parameters for better SQLite compatibility
+      const stmt = this.db.prepare(`
+        INSERT INTO notes (id, title, workspace_id, folder_id, user_id, is_favorite, type, created_at, updated_at, sync_status, server_updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      
+      stmt.run(
+        note.id,
+        note.title,
+        note.workspace_id,
+        note.folder_id,
+        note.user_id,
+        is_favorite_value, // Use the integer value
+        note.type || 'note',
         now,
         now,
         'pending',
         null
       );
       
-      console.log(`🔶 [ELECTRON DB] Successfully inserted page with ID: ${page.id}`);
+      console.log(`🔶 [ELECTRON DB] Successfully inserted note with ID: ${note.id}`);
       
-      // Create the complete Page object for the return value
-      const newPage: Page = {
-        id: page.id,
-        title: page.title,
-        parent_id: page.parent_id,
-        user_id: page.user_id,
+      // Create the complete Note object for the return value
+      const newNote: Note = {
+        id: note.id,
+        title: note.title,
+        workspace_id: note.workspace_id,
+        folder_id: note.folder_id,
+        user_id: note.user_id,
         is_favorite: Boolean(is_favorite_value), // Convert back to boolean for TypeScript
-        type: page.type || 'note',
+        type: note.type || 'note',
         created_at: now,
         updated_at: now,
         sync_status: 'pending',
@@ -202,28 +499,29 @@ class DatabaseService {
       };
       
       // Add to sync log
-      this.addToSyncLog('page', newPage.id, 'create', JSON.stringify(newPage));
+      this.addToSyncLog('note', newNote.id, 'create', JSON.stringify(newNote));
       
-      return newPage;
+      return newNote;
     } catch (error) {
-      console.error(`🔶 [ELECTRON DB] Error inserting page:`, error);
+      console.error(`🔶 [ELECTRON DB] Error inserting note:`, error);
       throw error;
     }
   }
 
-  public updatePage(id: string, updates: Partial<Omit<Page, 'id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>): Page | undefined {
-    const page = this.getPage(id);
-    if (!page) return undefined;
+  public updateNote(id: string, updates: Partial<Omit<Note, 'id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>): Note | undefined {
+    const note = this.getNote(id);
+    if (!note) return undefined;
 
     const now = new Date().toISOString();
     
     // Convert boolean to number for SQLite compatibility if present
-    const is_favorite_value = updates.is_favorite !== undefined ? (updates.is_favorite ? 1 : 0) : (page.is_favorite ? 1 : 0);
+    const is_favorite_value = updates.is_favorite !== undefined ? (updates.is_favorite ? 1 : 0) : (note.is_favorite ? 1 : 0);
     
     const stmt = this.db.prepare(`
-      UPDATE pages 
+      UPDATE notes 
       SET title = ?, 
-          parent_id = ?, 
+          workspace_id = ?, 
+          folder_id = ?, 
           is_favorite = ?, 
           type = ?, 
           updated_at = ?,
@@ -232,52 +530,53 @@ class DatabaseService {
     `);
     
     stmt.run(
-      updates.title || page.title,
-      updates.parent_id !== undefined ? updates.parent_id : page.parent_id,
+      updates.title || note.title,
+      updates.workspace_id !== undefined ? updates.workspace_id : note.workspace_id,
+      updates.folder_id !== undefined ? updates.folder_id : note.folder_id,
       is_favorite_value,
-      updates.type || page.type,
+      updates.type || note.type,
       now, // updated_at
       'pending', // sync_status
       id
     );
     
-    const updatedPage: Page = {
-      ...page,
+    const updatedNote: Note = {
+      ...note,
       ...updates,
       updated_at: now,
       sync_status: 'pending'
     };
     
     // Add to sync log
-    this.addToSyncLog('page', updatedPage.id, 'update', JSON.stringify(updatedPage));
+    this.addToSyncLog('note', updatedNote.id, 'update', JSON.stringify(updatedNote));
     
-    return updatedPage;
+    return updatedNote;
   }
 
-  public deletePage(id: string): void {
-    const page = this.getPage(id);
-    if (!page) return;
+  public deleteNote(id: string): void {
+    const note = this.getNote(id);
+    if (!note) return;
 
     // Add to sync log before deleting
-    this.addToSyncLog('page', id, 'delete', JSON.stringify({ id }));
+    this.addToSyncLog('note', id, 'delete', JSON.stringify({ id }));
     
-    const stmt = this.db.prepare('DELETE FROM pages WHERE id = ?');
+    const stmt = this.db.prepare('DELETE FROM notes WHERE id = ?');
     stmt.run(id);
   }
 
   // Blocks CRUD operations
-  public getBlocks(pageId: string): Block[] {
-    console.log(`🔶 [ELECTRON DB] Getting blocks for page: ${pageId}`);
-    const stmt = this.db.prepare('SELECT * FROM blocks WHERE page_id = ? ORDER BY order_index ASC');
-    const blocks = stmt.all(pageId) as Block[];
-    console.log(`🔶 [ELECTRON DB] Found ${blocks.length} blocks for page ${pageId}`);
+  public getBlocks(noteId: string): Block[] {
+    console.log(`🔶 [ELECTRON DB] Getting blocks for note: ${noteId}`);
+    const stmt = this.db.prepare('SELECT * FROM blocks WHERE note_id = ? ORDER BY order_index ASC');
+    const blocks = stmt.all(noteId) as Block[];
+    console.log(`🔶 [ELECTRON DB] Found ${blocks.length} blocks for note ${noteId}`);
     
     // Log block details for debugging
     if (blocks.length > 0) {
       const editorBlocks = blocks.filter(b => b.type === 'editor');
-      console.log(`🔶 [ELECTRON DB] Found ${editorBlocks.length} editor blocks for page ${pageId}`);
+      console.log(`🔶 [ELECTRON DB] Found ${editorBlocks.length} editor blocks for note ${noteId}`);
       editorBlocks.forEach(b => {
-        console.log(`🔶 [ELECTRON DB] Editor block ${b.id} for page ${b.page_id}, content length: ${b.content ? b.content.length : 0}`);
+        console.log(`🔶 [ELECTRON DB] Editor block ${b.id} for note ${b.note_id}, content length: ${b.content ? b.content.length : 0}`);
       });
     }
     
@@ -290,7 +589,7 @@ class DatabaseService {
   }
 
   public createBlock(block: Omit<Block, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>): Block {
-    console.log(`🔶 [ELECTRON DB] Creating block for page: ${block.page_id}, type: ${block.type}`);
+    console.log(`🔶 [ELECTRON DB] Creating block for note: ${block.note_id}, type: ${block.type}`);
     
     const now = new Date().toISOString();
     
@@ -298,7 +597,7 @@ class DatabaseService {
       // Log the exact data we're about to insert
       console.log(`🔶 [ELECTRON DB] Block data before insert:`, {
         id: block.id,
-        page_id: block.page_id,
+        note_id: block.note_id,
         user_id: block.user_id,
         type: block.type,
         content: block.content ? `${block.content.substring(0, 50)}...` : null, // Truncate for logging
@@ -308,13 +607,13 @@ class DatabaseService {
       
       // Use positional parameters for better SQLite compatibility
       const stmt = this.db.prepare(`
-        INSERT INTO blocks (id, page_id, user_id, type, content, metadata, order_index, created_at, updated_at, sync_status, server_updated_at)
+        INSERT INTO blocks (id, note_id, user_id, type, content, metadata, order_index, created_at, updated_at, sync_status, server_updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       
       stmt.run(
         block.id,
-        block.page_id,
+        block.note_id,
         block.user_id,
         block.type,
         block.content,
@@ -329,7 +628,7 @@ class DatabaseService {
       // Create the complete Block object for the return value
       const newBlock: Block = {
         id: block.id,
-        page_id: block.page_id,
+        note_id: block.note_id,
         user_id: block.user_id,
         type: block.type,
         content: block.content,
@@ -344,7 +643,7 @@ class DatabaseService {
       // Add to sync log
       this.addToSyncLog('block', newBlock.id, 'create', JSON.stringify(newBlock));
       
-      console.log(`🔶 [ELECTRON DB] Created block ${newBlock.id} for page ${newBlock.page_id}`);
+      console.log(`🔶 [ELECTRON DB] Created block ${newBlock.id} for note ${newBlock.note_id}`);
       if (newBlock.type === 'editor') {
         console.log(`🔶 [ELECTRON DB] Created editor block with content length: ${newBlock.content ? newBlock.content.length : 0}`);
       }
@@ -356,7 +655,7 @@ class DatabaseService {
     }
   }
 
-  public updateBlock(id: string, updates: Partial<Omit<Block, 'id' | 'page_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>): Block | undefined {
+  public updateBlock(id: string, updates: Partial<Omit<Block, 'id' | 'note_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>): Block | undefined {
     console.log(`🔶 [ELECTRON DB] Updating block: ${id}`);
     
     // Get the current block
@@ -366,7 +665,7 @@ class DatabaseService {
       return undefined;
     }
     
-    console.log(`🔶 [ELECTRON DB] Updating block ${id} for page ${currentBlock.page_id}`);
+    console.log(`🔶 [ELECTRON DB] Updating block ${id} for note ${currentBlock.note_id}`);
     
     try {
       const now = new Date().toISOString();
@@ -410,7 +709,7 @@ class DatabaseService {
       // Add to sync log
       this.addToSyncLog('block', id, 'update', JSON.stringify(updatedBlock));
       
-      console.log(`🔶 [ELECTRON DB] Updated block ${id} for page ${currentBlock.page_id}`);
+      console.log(`🔶 [ELECTRON DB] Updated block ${id} for note ${currentBlock.note_id}`);
       if (updatedBlock.type === 'editor') {
         console.log(`🔶 [ELECTRON DB] Updated editor block with content length: ${updatedBlock.content ? updatedBlock.content.length : 0}`);
       }
@@ -465,24 +764,16 @@ class DatabaseService {
   }
 
   // Sync log operations
-  private addToSyncLog(entityType: 'page' | 'block', entityId: string, action: 'create' | 'update' | 'delete', payload: string): void {
+  private addToSyncLog(entityType: 'note' | 'block' | 'workspace' | 'folder', entityId: string, action: 'create' | 'update' | 'delete', payload: string): void {
     const now = new Date().toISOString();
     const id = `${entityType}_${entityId}_${now}`;
     
     const stmt = this.db.prepare(`
-      INSERT INTO sync_log (id, entity_type, entity_id, action, status, payload, created_at)
-      VALUES (@id, @entity_type, @entity_id, @action, @status, @payload, @created_at)
+      INSERT INTO sync_log (id, entity_type, entity_id, action, payload, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
     
-    stmt.run({
-      id,
-      entity_type: entityType,
-      entity_id: entityId,
-      action,
-      status: 'pending',
-      payload,
-      created_at: now
-    });
+    stmt.run(id, entityType, entityId, action, payload, now);
   }
 
   public getPendingSyncLogs(): SyncLog[] {
@@ -510,42 +801,41 @@ class DatabaseService {
   }
 
   // Sync operations
-  public markEntityAsSynced(entityType: 'page' | 'block', entityId: string, serverUpdatedAt: string): void {
-    const table = entityType === 'page' ? 'pages' : 'blocks';
+  public markEntityAsSynced(entityType: 'note' | 'block' | 'folder', entityId: string, serverUpdatedAt: string): void {
+    const table = entityType === 'note' ? 'notes' : entityType === 'block' ? 'blocks' : 'folders';
     
     const stmt = this.db.prepare(`
       UPDATE ${table} 
-      SET sync_status = 'synced', 
-          server_updated_at = @server_updated_at
-      WHERE id = @id
+      SET sync_status = 'synced',
+          server_updated_at = ?
+      WHERE id = ?
     `);
     
-    stmt.run({
-      id: entityId,
-      server_updated_at: serverUpdatedAt
-    });
+    stmt.run(serverUpdatedAt, entityId);
   }
 
-  public markEntityAsConflict(entityType: 'page' | 'block', entityId: string): void {
-    const table = entityType === 'page' ? 'pages' : 'blocks';
+  public markEntityAsConflict(entityType: 'note' | 'block' | 'folder', entityId: string): void {
+    const table = entityType === 'note' ? 'notes' : entityType === 'block' ? 'blocks' : 'folders';
     
     const stmt = this.db.prepare(`
       UPDATE ${table} 
       SET sync_status = 'conflict'
-      WHERE id = @id
+      WHERE id = ?
     `);
     
-    stmt.run({ id: entityId });
+    stmt.run(entityId);
   }
 
   // Get all entities that need syncing
-  public getEntitiesToSync(): { pages: Page[]; blocks: Block[] } {
-    const pagesStmt = this.db.prepare("SELECT * FROM pages WHERE sync_status = 'pending'");
+  public getEntitiesToSync(): { notes: Note[]; blocks: Block[]; folders: Folder[] } {
+    const notesStmt = this.db.prepare("SELECT * FROM notes WHERE sync_status = 'pending'");
     const blocksStmt = this.db.prepare("SELECT * FROM blocks WHERE sync_status = 'pending'");
+    const foldersStmt = this.db.prepare("SELECT * FROM folders WHERE sync_status = 'pending'");
     
     return {
-      pages: pagesStmt.all() as Page[],
-      blocks: blocksStmt.all() as Block[]
+      notes: notesStmt.all() as Note[],
+      blocks: blocksStmt.all() as Block[],
+      folders: foldersStmt.all() as Folder[]
     };
   }
 

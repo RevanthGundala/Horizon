@@ -1,6 +1,6 @@
 import { tool } from 'ai';
 import { z } from 'zod';
-import { updatePage as updatePageLambda } from '../lambdas/pages';
+import { updatePage as updatePageLambda } from '../lambdas/notes';
 
 async function updatePage(pageId: string, newContent: string, userId: string): Promise<string> {
   try {

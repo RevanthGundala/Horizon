@@ -1,6 +1,6 @@
 import { tool } from 'ai';
 import { z } from 'zod';
-import { deletePage as deletePageLambda } from '../lambdas/pages';
+import { deletePage as deletePageLambda } from '../lambdas/notes';
 
 async function deletePage(pageId: string, userId: string): Promise<string> {
   try {

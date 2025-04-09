@@ -6,7 +6,7 @@ import { statusApi } from "./api/lambdas/status";
 import { userApi } from "./api/lambdas/user";
 import { chatApi } from "./api/lambdas/chat";
 import { authApi } from "./api/lambdas/auth";
-import { pagesApi } from "./api/lambdas/pages";
+import { pagesApi } from "./api/lambdas/notes";
 import { blocksApi } from "./api/lambdas/blocks";
 
 // Get environment variables from Pulumi config

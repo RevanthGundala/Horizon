@@ -2,8 +2,8 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { withAuth, createHeaders, handleOptions } from "../utils/middleware";
 import { Client } from "pg";
 
-// GET handler to retrieve pages for a user
-const getPagesHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
+// GET handler to retrieve notes for a user
+const getNotesHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
   // Handle OPTIONS requests for CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return handleOptions(event);
@@ -25,8 +25,8 @@ const getPagesHandler = async (event: APIGatewayProxyEvent, user: any): Promise<
       const queryParams = event.queryStringParameters || {};
       const parentId = queryParams.parentId || null;
       
-      // Query the database for pages
-      let query = "SELECT * FROM pages WHERE user_id = $1";
+      // Query the database for notes
+      let query = "SELECT * FROM notes WHERE user_id = $1";
       const queryParams2 = [user.id];
       
       if (parentId) {
@@ -44,7 +44,7 @@ const getPagesHandler = async (event: APIGatewayProxyEvent, user: any): Promise<
         statusCode: 200,
         headers: createHeaders(),
         body: JSON.stringify({
-          pages: result.rows
+          notes: result.rows
         }),
       };
     } finally {
@@ -52,29 +52,29 @@ const getPagesHandler = async (event: APIGatewayProxyEvent, user: any): Promise<
       await client.end();
     }
   } catch (error) {
-    console.error("Error fetching pages:", error);
+    console.error("Error fetching notes:", error);
     return {
       statusCode: 500,
       headers: createHeaders(),
-      body: JSON.stringify({ error: "Failed to fetch pages" }),
+      body: JSON.stringify({ error: "Failed to fetch notes" }),
     };
   }
 };
 
-// GET handler to retrieve a single page by ID
-const getPageHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
+// GET handler to retrieve a single note by ID
+const getNoteHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
   // Handle OPTIONS requests for CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return handleOptions(event);
   }
 
-  const pageId = event.pathParameters?.id;
+  const noteId = event.pathParameters?.id;
   
-  if (!pageId) {
+  if (!noteId) {
     return {
       statusCode: 400,
       headers: createHeaders(),
-      body: JSON.stringify({ error: "Page ID is required" }),
+      body: JSON.stringify({ error: "note ID is required" }),
     };
   }
 
@@ -90,34 +90,34 @@ const getPageHandler = async (event: APIGatewayProxyEvent, user: any): Promise<A
     await client.connect();
 
     try {
-      // Query the database for the page
-      const pageResult = await client.query(
-        "SELECT * FROM pages WHERE id = $1 AND user_id = $2",
-        [pageId, user.id]
+      // Query the database for the note
+      const noteResult = await client.query(
+        "SELECT * FROM notes WHERE id = $1 AND user_id = $2",
+        [noteId, user.id]
       );
 
-      if (pageResult.rows.length === 0) {
+      if (noteResult.rows.length === 0) {
         return {
           statusCode: 404,
           headers: createHeaders(),
-          body: JSON.stringify({ error: "Page not found" }),
+          body: JSON.stringify({ error: "Note not found" }),
         };
       }
 
-      const page = pageResult.rows[0];
+      const note = noteResult.rows[0];
 
-      // Get blocks for this page
+      // Get blocks for this note
       const blocksResult = await client.query(
-        "SELECT * FROM blocks WHERE page_id = $1 AND user_id = $2 ORDER BY order_index ASC",
-        [pageId, user.id]
+        "SELECT * FROM blocks WHERE note_id = $1 AND user_id = $2 ORDER BY order_index ASC",
+        [noteId, user.id]
       );
 
-      // Return the page with its blocks
+      // Return the note with its blocks
       return {
         statusCode: 200,
         headers: createHeaders(),
         body: JSON.stringify({
-          page,
+          note,
           blocks: blocksResult.rows
         }),
       };
@@ -126,17 +126,17 @@ const getPageHandler = async (event: APIGatewayProxyEvent, user: any): Promise<A
       await client.end();
     }
   } catch (error) {
-    console.error("Error fetching page:", error);
+    console.error("Error fetching note:", error);
     return {
       statusCode: 500,
       headers: createHeaders(),
-      body: JSON.stringify({ error: "Failed to fetch page" }),
+      body: JSON.stringify({ error: "Failed to fetch note" }),
     };
   }
 };
 
-// POST handler to create a new page
-const createPageHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
+// POST handler to create a new note
+const createNoteHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
   // Handle OPTIONS requests for CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return handleOptions(event);
@@ -151,7 +151,7 @@ const createPageHandler = async (event: APIGatewayProxyEvent, user: any): Promis
   }
 
   try {
-    const { title, parentId, type = 'page' } = JSON.parse(event.body);
+    const { title, parentId, type = 'note' } = JSON.parse(event.body);
 
     if (!title) {
       return {
@@ -175,21 +175,21 @@ const createPageHandler = async (event: APIGatewayProxyEvent, user: any): Promis
       // Start a transaction
       await client.query('BEGIN');
 
-      // Insert the new page
-      const pageResult = await client.query(
-        `INSERT INTO pages (user_id, parent_id, title, type) 
+      // Insert the new note
+      const noteResult = await client.query(
+        `INSERT INTO notes (user_id, parent_id, title, type) 
          VALUES ($1, $2, $3, $4) 
          RETURNING *`,
         [user.id, parentId || null, title, type]
       );
 
-      const newPage = pageResult.rows[0];
+      const newNote = noteResult.rows[0];
 
-      // Create an initial empty block for the page
+      // Create an initial empty block for the note
       await client.query(
-        `INSERT INTO blocks (page_id, user_id, type, content, order_index) 
+        `INSERT INTO blocks (note_id, user_id, type, content, order_index) 
          VALUES ($1, $2, $3, $4, $5)`,
-        [newPage.id, user.id, 'paragraph', '', 0]
+        [newNote.id, user.id, 'paragraph', '', 0]
       );
 
       // Commit the transaction
@@ -199,7 +199,7 @@ const createPageHandler = async (event: APIGatewayProxyEvent, user: any): Promis
         statusCode: 201,
         headers: createHeaders(),
         body: JSON.stringify({
-          page: newPage
+          note: newNote
         }),
       };
     } catch (error) {
@@ -211,29 +211,29 @@ const createPageHandler = async (event: APIGatewayProxyEvent, user: any): Promis
       await client.end();
     }
   } catch (error) {
-    console.error("Error creating page:", error);
+    console.error("Error creating note:", error);
     return {
       statusCode: 500,
       headers: createHeaders(),
-      body: JSON.stringify({ error: "Failed to create page" }),
+      body: JSON.stringify({ error: "Failed to create note" }),
     };
   }
 };
 
-// PUT handler to update a page
-const updatePageHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
+// PUT handler to update a note
+const updateNoteHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
   // Handle OPTIONS requests for CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return handleOptions(event);
   }
 
-  const pageId = event.pathParameters?.id;
+  const noteId = event.pathParameters?.id;
   
-  if (!pageId) {
+  if (!noteId) {
     return {
       statusCode: 400,
       headers: createHeaders(),
-      body: JSON.stringify({ error: "Page ID is required" }),
+      body: JSON.stringify({ error: "note ID is required" }),
     };
   }
 
@@ -259,17 +259,17 @@ const updatePageHandler = async (event: APIGatewayProxyEvent, user: any): Promis
     await client.connect();
 
     try {
-      // Check if the page exists and belongs to the user
+      // Check if the note exists and belongs to the user
       const checkResult = await client.query(
-        "SELECT * FROM pages WHERE id = $1 AND user_id = $2",
-        [pageId, user.id]
+        "SELECT * FROM notes WHERE id = $1 AND user_id = $2",
+        [noteId, user.id]
       );
 
       if (checkResult.rows.length === 0) {
         return {
           statusCode: 404,
           headers: createHeaders(),
-          body: JSON.stringify({ error: "Page not found or access denied" }),
+          body: JSON.stringify({ error: "note not found or access denied" }),
         };
       }
 
@@ -292,13 +292,13 @@ const updatePageHandler = async (event: APIGatewayProxyEvent, user: any): Promis
       updateFields.push(`updated_at = now()`);
 
       // Add the WHERE clause parameters
-      values.push(pageId);
+      values.push(noteId);
       values.push(user.id);
 
       // Execute the update if there are fields to update
       if (updateFields.length > 0) {
         const updateQuery = `
-          UPDATE pages 
+          UPDATE notes 
           SET ${updateFields.join(', ')} 
           WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}
           RETURNING *
@@ -310,7 +310,7 @@ const updatePageHandler = async (event: APIGatewayProxyEvent, user: any): Promis
           statusCode: 200,
           headers: createHeaders(),
           body: JSON.stringify({
-            page: result.rows[0]
+            note: result.rows[0]
           }),
         };
       } else {
@@ -325,29 +325,29 @@ const updatePageHandler = async (event: APIGatewayProxyEvent, user: any): Promis
       await client.end();
     }
   } catch (error) {
-    console.error("Error updating page:", error);
+    console.error("Error updating note:", error);
     return {
       statusCode: 500,
       headers: createHeaders(),
-      body: JSON.stringify({ error: "Failed to update page" }),
+      body: JSON.stringify({ error: "Failed to update note" }),
     };
   }
 };
 
-// DELETE handler to delete a page
-const deletePageHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
+// DELETE handler to delete a note
+const deleteNoteHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
   // Handle OPTIONS requests for CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return handleOptions(event);
   }
 
-  const pageId = event.pathParameters?.id;
+  const noteId = event.pathParameters?.id;
   
-  if (!pageId) {
+  if (!noteId) {
     return {
       statusCode: 400,
       headers: createHeaders(),
-      body: JSON.stringify({ error: "Page ID is required" }),
+      body: JSON.stringify({ error: "note ID is required" }),
     };
   }
 
@@ -363,33 +363,33 @@ const deletePageHandler = async (event: APIGatewayProxyEvent, user: any): Promis
     await client.connect();
 
     try {
-      // Check if the page exists and belongs to the user
+      // Check if the note exists and belongs to the user
       const checkResult = await client.query(
-        "SELECT * FROM pages WHERE id = $1 AND user_id = $2",
-        [pageId, user.id]
+        "SELECT * FROM notes WHERE id = $1 AND user_id = $2",
+        [noteId, user.id]
       );
 
       if (checkResult.rows.length === 0) {
         return {
           statusCode: 404,
           headers: createHeaders(),
-          body: JSON.stringify({ error: "Page not found or access denied" }),
+          body: JSON.stringify({ error: "note not found or access denied" }),
         };
       }
 
       // Start a transaction
       await client.query('BEGIN');
 
-      // Delete all blocks associated with the page
+      // Delete all blocks associated with the note
       await client.query(
-        "DELETE FROM blocks WHERE page_id = $1",
-        [pageId]
+        "DELETE FROM blocks WHERE note_id = $1",
+        [noteId]
       );
 
-      // Delete the page
+      // Delete the note
       await client.query(
-        "DELETE FROM pages WHERE id = $1 AND user_id = $2",
-        [pageId, user.id]
+        "DELETE FROM notes WHERE id = $1 AND user_id = $2",
+        [noteId, user.id]
       );
 
       // Commit the transaction
@@ -400,7 +400,7 @@ const deletePageHandler = async (event: APIGatewayProxyEvent, user: any): Promis
         headers: createHeaders(),
         body: JSON.stringify({
           success: true,
-          message: "Page deleted successfully"
+          message: "note deleted successfully"
         }),
       };
     } catch (error) {
@@ -412,26 +412,26 @@ const deletePageHandler = async (event: APIGatewayProxyEvent, user: any): Promis
       await client.end();
     }
   } catch (error) {
-    console.error("Error deleting page:", error);
+    console.error("Error deleting note:", error);
     return {
       statusCode: 500,
       headers: createHeaders(),
-      body: JSON.stringify({ error: "Failed to delete page" }),
+      body: JSON.stringify({ error: "Failed to delete note" }),
     };
   }
 };
 
 // Wrap the handlers with authentication middleware
-export const getAllPages = withAuth(getPagesHandler);
-export const getPage = withAuth(getPageHandler);
-export const createPage = withAuth(createPageHandler);
-export const updatePage = withAuth(updatePageHandler);
-export const deletePage = withAuth(deletePageHandler);
+export const getAllNotes = withAuth(getNotesHandler);
+export const getNote = withAuth(getNoteHandler);
+export const createNote = withAuth(createNoteHandler);
+export const updateNote = withAuth(updateNoteHandler);
+export const deleteNote = withAuth(deleteNoteHandler);
 
-export const pagesApi = {
-  getAllPages,
-  getPage,
-  createPage,
-  updatePage,
-  deletePage
+export const notesApi = {
+  getAllNotes,
+  getNote,
+  createNote,
+  updateNote,
+  deleteNote
 };

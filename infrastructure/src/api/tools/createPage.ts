@@ -1,6 +1,6 @@
 import { tool } from 'ai';
 import { z } from 'zod';
-import { createPage as createPageLambda, updatePage as updatePageLambda } from '../lambdas/pages';
+import { createPage as createPageLambda, updatePage as updatePageLambda } from '../lambdas/notes';
 import { createBlock } from '../lambdas/blocks';
 
 async function createPage(title: string, content: string, userId: string): Promise<string> {

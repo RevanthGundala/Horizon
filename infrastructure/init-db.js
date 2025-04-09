@@ -24,7 +24,9 @@ async function init() {
     await client.query(`DROP TABLE IF EXISTS databases CASCADE;`);
     await client.query(`DROP TABLE IF EXISTS sync_log CASCADE;`);
     await client.query(`DROP TABLE IF EXISTS blocks CASCADE;`);
-    await client.query(`DROP TABLE IF EXISTS pages CASCADE;`);
+    await client.query(`DROP TABLE IF EXISTS notes CASCADE;`);
+    await client.query(`DROP TABLE IF EXISTS folders CASCADE;`);
+    await client.query(`DROP TABLE IF EXISTS workspaces CASCADE;`);
     await client.query(`DROP TABLE IF EXISTS users CASCADE;`);
 
     await client.query(`
@@ -36,13 +38,37 @@ async function init() {
     `);
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS pages (
+      CREATE TABLE IF NOT EXISTS workspaces (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
-        parent_id UUID REFERENCES pages(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        is_favorite BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT now(),
+        updated_at TIMESTAMP DEFAULT now()
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS folders (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
+        user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        is_favorite BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT now(),
+        updated_at TIMESTAMP DEFAULT now()
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notes (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
+        folder_id UUID REFERENCES folders(id) ON DELETE SET NULL,
         title TEXT NOT NULL,
         is_favorite BOOLEAN DEFAULT false,
-        type TEXT DEFAULT 'page',
+        type TEXT DEFAULT 'note',
         created_at TIMESTAMP DEFAULT now(),
         updated_at TIMESTAMP DEFAULT now(),
         sync_status TEXT DEFAULT 'synced',
@@ -53,7 +79,7 @@ async function init() {
     await client.query(`
       CREATE TABLE IF NOT EXISTS blocks (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        page_id UUID REFERENCES pages(id) ON DELETE CASCADE,
+        note_id UUID REFERENCES notes(id) ON DELETE CASCADE,
         user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
         type TEXT NOT NULL,
         content TEXT,
@@ -100,7 +126,7 @@ async function init() {
     await client.query(`
       CREATE TABLE IF NOT EXISTS databases (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        page_id UUID REFERENCES pages(id),
+        note_id UUID REFERENCES notes(id),
         user_id TEXT REFERENCES users(id),
         name TEXT
       );
