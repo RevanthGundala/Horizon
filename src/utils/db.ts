@@ -28,21 +28,6 @@ export interface Block {
   // Removed client_updated_at field to match backend schema
 }
 
-// Type definitions for the Electron API
-declare global {
-  interface Window {
-    electron: {
-      ipcRenderer: {
-        invoke(channel: string, ...args: any[]): Promise<any>;
-        send(channel: string, data: any): void;
-        receive(channel: string, func: (...args: any[]) => void): void;
-        on(channel: string, callback: (...args: any[]) => void): void;
-        removeListener(channel: string, callback: (...args: any[]) => void): void;
-      };
-    };
-  }
-}
-
 // Database service interfaces
 export interface DbPagesService {
   getPages(parentId?: string): Promise<Page[]>;
@@ -319,7 +304,7 @@ export const dbSync: DbSyncService = {
     }
     
     try {
-      return await ipcCall<number>('db:get-pending-changes-count');
+      return await ipcCall<number>('db:get-pending-sync-count');
     } catch (error) {
       console.error('Error getting pending changes count:', error);
       return 0;

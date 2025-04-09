@@ -22,7 +22,28 @@ const Sidebar: React.FC = () => {
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activePageMenu, setActivePageMenu] = useState<string | null>(null);
-
+  
+  // Track the current location manually
+  const [currentPath, setCurrentPath] = useState(window.location.pathname);
+  
+  // Update current path when location changes
+  useEffect(() => {
+    const updatePath = () => {
+      setCurrentPath(window.location.pathname);
+      console.log('Current path updated:', window.location.pathname);
+    };
+    
+    // Initial update
+    updatePath();
+    
+    // Listen for location changes
+    window.addEventListener('popstate', updatePath);
+    
+    return () => {
+      window.removeEventListener('popstate', updatePath);
+    };
+  }, []);
+  
   // Fetch pages from the database
   const { data: pages, isLoading: isPagesLoading } = usePages();
   // Delete page mutation
@@ -49,12 +70,29 @@ const Sidebar: React.FC = () => {
     className, 
     children 
   }) => {
+    // Simple check if this link matches the current path
+    const isActive = to === currentPath || 
+                    (to !== '/' && currentPath.startsWith(to));
+    
+    console.log(`Link: ${to}, Current: ${currentPath}, isActive: ${isActive}`);
+    
+    // Apply active class if this is the current route
+    const linkClassName = isActive ? `${className} active-nav-item` : className;
+    
+    // Add click handler to update current path
+    const handleClick = () => {
+      setTimeout(() => {
+        setCurrentPath(window.location.pathname);
+        console.log('Path updated after click:', window.location.pathname);
+      }, 50);
+    };
+    
     // Only use Link for defined routes
     if (to === '/' || to.startsWith('/page/')) {
-      return <Link to={to} className={className}>{children}</Link>;
+      return <Link to={to} className={linkClassName} onClick={handleClick}>{children}</Link>;
     }
     // Use anchor tag for other routes
-    return <a href="#" className={className}>{children}</a>;
+    return <a href="#" className={linkClassName}>{children}</a>;
   };
 
   const handleLogout = async () => {
@@ -84,7 +122,7 @@ const Sidebar: React.FC = () => {
   };
 
   return (
-    <div className="sidebar">
+    <div className="sidebar" ref={menuRef}>
       <div className="sidebar-header">
         <div className="app-logo">Horizon</div>
       </div>

@@ -54,7 +54,9 @@
   padding: 8px 16px;
   color: var(--text-color);
   text-decoration: none;
-  transition: background-color 0.2s;
+  transition: background-color 0.2s, opacity 0.2s;
+  border-radius: 4px;
+  margin: 0 8px;
 }
 
 .nav-item:hover {
@@ -477,4 +479,30 @@
 
 .delete-item .dropdown-icon {
   color: var(--danger-color, #e53935);
+}
+
+/* Style for the active navigation item */
+.active-nav-item {
+  background-color: var(--hover-bg);
+  font-weight: 500;
+  opacity: 1;
+  position: relative;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* Add a subtle left border to the active item */
+.active-nav-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background-color: var(--accent-color, #4285f4);
+  border-radius: 0 2px 2px 0;
+}
+
+/* Make the icon more vibrant for active items */
+.active-nav-item .nav-icon {
+  color: var(--accent-color, #4285f4);
 }

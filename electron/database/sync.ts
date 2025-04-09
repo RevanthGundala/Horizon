@@ -67,7 +67,6 @@ class SyncService {
     // Handle online status change from renderer
     ipcMain.handle('sync:set-online-status', (_event, isOnline: boolean) => {
       this.isOnline = isOnline;
-      this.db.updateNetworkStatus(isOnline);
       
       // Trigger sync if we just came online
       if (isOnline) {
@@ -78,7 +77,7 @@ class SyncService {
     });
   }
 
-  private async checkNetworkStatus(): Promise<void> {
+  public async checkNetworkStatus(): Promise<boolean> {
     try {
       // Try to fetch a small resource from the API
       const response = await fetch(`${API_URL}/api/status`, {
@@ -87,13 +86,12 @@ class SyncService {
       });
       
       this.isOnline = response.ok;
+      return this.isOnline;
     } catch (error) {
       this.isOnline = false;
       console.log('Network check failed, device appears to be offline');
+      return false;
     }
-    
-    // Update database with current status
-    this.db.updateNetworkStatus(this.isOnline);
   }
 
   public async syncWithServer(): Promise<{ success: boolean; error?: string }> {

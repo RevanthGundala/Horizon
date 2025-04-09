@@ -1,8 +1,6 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
 import * as awsx from "@pulumi/awsx";
-import * as random from "@pulumi/random";
-
 // Import our Lambda handlers
 import { statusApi } from "./api/lambdas/status";
 import { userApi } from "./api/lambdas/user";
@@ -19,6 +17,7 @@ const frontendUrl = config.require("FRONTEND_URL");
 const workosApiKey = config.requireSecret("WORKOS_API_KEY");
 const workosClientId = config.requireSecret("WORKOS_CLIENT_ID");
 const workosPassword = config.requireSecret("WORKOS_COOKIE_PASSWORD");
+const openaiApiKey = config.requireSecret("OPENAI_API_KEY");
 const password = "zisbas-roCfud-9kappe";
 const connectionString = `postgresql://postgres.wduhigsetfxsisltbjhr:${password}@aws-0-us-east-1.pooler.supabase.com:6543/postgres`;
 
@@ -33,6 +32,8 @@ const env = {
     FIREWORKS_API_KEY: fireworksApiKey,
     API_URL: apiUrl,
     DB_URL: connectionString,
+    DATABASE_URL: connectionString,
+    OPENAI_API_KEY: openaiApiKey,
   }
 };
 

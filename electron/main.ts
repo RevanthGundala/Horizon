@@ -52,7 +52,7 @@ const createWindow = () => {
     // Perform any cleanup needed before the window closes
     if (syncService) {
       // Try to sync one last time before closing
-      syncService.syncWithServer().catch(err => {
+      syncService.syncWithServer().catch((err: any) => {
         console.error('Error during final sync:', err);
       });
     }
@@ -133,10 +133,8 @@ app.whenReady().then(() => {
   const logPath = setupLogging();
   console.log('Electron app starting...');
 
-  // Set up IPC handlers for database operations
+  // Set up IPC handlers
   setupDatabaseIpcHandlers();
-  
-  // Set up IPC handlers for authentication operations
   setupAuthIpcHandlers();
   
   // Initialize sync service

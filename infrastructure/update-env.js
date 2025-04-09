@@ -97,6 +97,7 @@ try {
     });
   }
   
+  
   console.log('Environment update complete!');
 } catch (error) {
   console.error('Error updating environment variables:', error);

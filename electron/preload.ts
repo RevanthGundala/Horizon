@@ -23,16 +23,20 @@ contextBridge.exposeInMainWorld('electron', {
         'db:delete-block',
         'db:update-blocks-batch',
         'db:get-pending-changes-count',
+        'db:get-pending-sync-count', 
+        'db:sync', 
+        'db:get-user-id', 
         // Sync operations
         'sync:request-sync',
         'sync:get-network-status',
         'sync:set-online-status',
-        // Auth operations
         'auth:login',
         'auth:logout',
         'auth:is-authenticated',
         'auth:get-user-id',
-        'sync:get-auth-cookie'
+        'sync:get-auth-cookie',
+        // Chat operations
+        'chat:send-message'
       ];
       if (validChannels.includes(channel)) {
         return ipcRenderer.invoke(channel, ...args);

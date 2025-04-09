@@ -1,230 +1,108 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { createHeaders, withAuth } from "../utils/middleware";
-import { createFireworksStream, streamToString } from "../utils/stream";
-import { availableTools, toolRegistry } from "../tools";
+import { createHeaders, handleOptions, withAuth } from "../utils/middleware";
+import { streamText } from "ai"
+import { openai } from "@ai-sdk/openai"
+import { search } from "../tools";
 
-// Define the interface for the chat request
-interface ChatRequest {
-  messages: Array<{
-    role: string;
-    content: string;
-  }>;
-  tools?: Array<{
-    type: string;
-    function: {
-      name: string;
-      description: string;
-      parameters: Record<string, any>;
-    };
-  }>;
-  stream?: boolean;
-  model?: string;
-  temperature?: number;
-  max_tokens?: number;
-}
+const chatHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
+  // Handle OPTIONS requests for CORS preflight
+  if (event.httpMethod === 'OPTIONS') {
+    return await handleOptions(event);
+  }
 
-// Define the payload interface to fix TypeScript errors
-interface FireworksPayload {
-  model: string;
-  messages: Array<{
-    role: string;
-    content: string;
-  }>;
-  stream: boolean;
-  temperature: number;
-  max_tokens: number;
-  tools?: Array<{
-    type: string;
-    function: {
-      name: string;
-      description: string;
-      parameters: Record<string, any>;
-    };
-  }>;
-}
-
-/**
- * Chat handler - processes chat requests and streams responses from Fireworks AI
- */
-export const chatHandler = withAuth(
-  async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
-    if (event.httpMethod === 'OPTIONS') {
+  try {
+    // Parse the request body
+    if (!event.body) {
       return {
-        statusCode: 200,
-        headers: createHeaders(),
-        body: '',
+        statusCode: 400,
+        headers: createHeaders(event.headers.origin || event.headers.Origin),
+        body: JSON.stringify({ error: 'Request body is required' })
       };
     }
+
+    const body = JSON.parse(event.body);
+    const { messages } = body;
+
+    if (!messages || !Array.isArray(messages)) {
+      return {
+        statusCode: 400,
+        headers: createHeaders(event.headers.origin || event.headers.Origin),
+        body: JSON.stringify({ error: 'Messages array is required' })
+      };
+    }
+
+    // System prompt for the AI
+    const systemPrompt = `You are an AI assistant that helps users with their notes and documents.
+You have access to the user's knowledge base through the search tool.
+When answering questions, try to use the search tool to find relevant information.`;
 
     try {
-      if (!event.body) {
-        return {
-          statusCode: 400,
-          headers: createHeaders(),
-          body: JSON.stringify({ error: "Request body is required" }),
-        };
-      }
+      // Stream the response using the AI SDK
+      const result = await streamText({
+        model: openai("gpt-4o-mini"),
+        messages,
+        system: systemPrompt,
+        tools: {
+          search: search(user.id),
+        },
+      });
 
-      const requestBody: ChatRequest = JSON.parse(event.body);
-      const fireworksApiKey = process.env.FIREWORKS_API_KEY;
-
-      if (!fireworksApiKey) {
-        return {
-          statusCode: 500,
-          headers: createHeaders(),
-          body: JSON.stringify({ error: "Fireworks API key is not configured" }),
-        };
-      }
-
-      // Default model if not specified
-      const model = requestBody.model || "accounts/fireworks/models/llama-v3p1-70b-instruct";
+      // Get the streaming response
+      const streamResponse = result.toDataStreamResponse();
       
-      // Prepare the request payload for Fireworks AI
-      const payload: FireworksPayload = {
-        model,
-        messages: requestBody.messages,
-        stream: requestBody.stream !== undefined ? requestBody.stream : true, // Default to streaming
-        temperature: requestBody.temperature || 0.7,
-        max_tokens: requestBody.max_tokens || 1000,
+      // Extract headers from the Response object
+      const headers = Object.fromEntries(streamResponse.headers.entries());
+      
+      // Get origin for CORS headers
+      const origin = event.headers.origin || event.headers.Origin;
+      
+      // Return the response in a format compatible with AWS Lambda
+      return {
+        statusCode: streamResponse.status,
+        headers: {
+          // Important: Set the correct content type for streaming
+          'Content-Type': 'text/event-stream',
+          // Add CORS headers
+          'Access-Control-Allow-Origin': origin || process.env.FRONTEND_URL || 'http://localhost:5173',
+          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Amz-Date, X-Api-Key, X-Amz-Security-Token, Cookie',
+          'Access-Control-Allow-Credentials': 'true',
+          'Access-Control-Expose-Headers': 'Content-Type, Content-Length',
+          // Streaming specific headers
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+          ...headers
+        },
+        // Use the ReadableStream directly
+        body: await new Response(streamResponse.body).text(),
+        isBase64Encoded: false
       };
-
-      // Add tools if provided in the request or use available tools by default
-      if (requestBody.tools && requestBody.tools.length > 0) {
-        payload.tools = requestBody.tools;
-      } else {
-        // Use all available tools by default
-        payload.tools = availableTools;
-      }
-
-      // If streaming is requested
-      if (payload.stream) {
-        // Create a stream from the Fireworks API
-        const responseStream = createFireworksStream(
-          'https://api.fireworks.ai/inference/v1/chat/completions',
-          payload,
-          fireworksApiKey
-        );
-        
-        // Convert the stream to a string for the Lambda response
-        const streamContent = await streamToString(responseStream);
-        
-        return {
-          statusCode: 200,
-          headers: {
-            ...createHeaders(),
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-          },
-          body: streamContent,
-          isBase64Encoded: false,
-        };
-      } else {
-        // For non-streaming responses
-        const response = await fetch(
-          'https://api.fireworks.ai/inference/v1/chat/completions',
-          {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${fireworksApiKey}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload)
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error(`Fireworks API error: ${response.status} ${response.statusText}`);
-        }
-
-        return {
-          statusCode: 200,
-          headers: createHeaders(),
-          body: JSON.stringify(await response.json()),
-        };
-      }
-    } catch (error) {
-      console.error("Chat error:", error);
+    } catch (streamError) {
+      console.error('Streaming error:', streamError);
       return {
         statusCode: 500,
-        headers: createHeaders(),
-        body: JSON.stringify({ error: "Failed to process chat request" }),
+        headers: createHeaders(event.headers.origin || event.headers.Origin),
+        body: JSON.stringify({ error: 'Streaming error', details: String(streamError) })
       };
     }
+  } catch (error) {
+    console.error('Error in chat handler:', error);
+    return {
+      statusCode: 500,
+      headers: createHeaders(event.headers.origin || event.headers.Origin),
+      body: JSON.stringify({ error: 'Internal server error' })
+    };
   }
-);
+};
 
-/**
- * Tool execution handler - processes tool calls from the chat
- */
-export const toolExecutionHandler = withAuth(
-  async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
-    // Handle OPTIONS request for CORS preflight
-    if (event.httpMethod === 'OPTIONS') {
-      return {
-        statusCode: 200,
-        headers: createHeaders(),
-        body: '',
-      };
-    }
-
-    try {
-      if (!event.body) {
-        return {
-          statusCode: 400,
-          headers: createHeaders(),
-          body: JSON.stringify({ error: "Request body is required" }),
-        };
-      }
-
-      const requestBody = JSON.parse(event.body);
-      const { toolName, arguments: toolArgs } = requestBody;
-
-      // Check if the tool exists in the registry
-      if (!toolRegistry[toolName]) {
-        return {
-          statusCode: 400,
-          headers: createHeaders(),
-          body: JSON.stringify({ error: `Unknown tool: ${toolName}` }),
-        };
-      }
-
-      // Execute the tool from the registry
-      const toolFunction = toolRegistry[toolName];
-      
-      let result;
-      if (toolName === 'get_user_info') {
-        // User info tool needs the user ID
-        result = await toolFunction(user.id);
-      } else if (toolName === 'get_weather') {
-        // Weather tool needs the location
-        result = await toolFunction(toolArgs.location);
-      } else if (toolName === 'search_knowledge_base') {
-        // Knowledge base tool needs the query
-        result = await toolFunction(toolArgs.query);
-      } else {
-        // For other tools, pass all arguments
-        result = await toolFunction(toolArgs);
-      }
-
-      return {
-        statusCode: 200,
-        headers: createHeaders(),
-        body: JSON.stringify({ result }),
-      };
-    } catch (error) {
-      console.error("Tool execution error:", error);
-      return {
-        statusCode: 500,
-        headers: createHeaders(),
-        body: JSON.stringify({ error: "Failed to execute tool" }),
-      };
-    }
-  }
-);
+// Export the handler with authentication middleware
+const chat = withAuth(chatHandler);
 
 // Export the API handlers
 export const chatApi = {
-  chat: chatHandler,
-  executeTool: toolExecutionHandler,
+  chat,
 };
+
+// Also export the handler directly for local development
+export const handler = chat;

@@ -1,8 +1,11 @@
 import { ipcMain } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
-import DatabaseService, { Page, Block } from './index';
+import DatabaseService, { Block, Page } from './index';
 import SyncService from './sync';
 import AuthService from '../auth';
+
+// API URL for server communication
+const API_URL = process.env.VITE_API_URL || 'https://vihy6489c7.execute-api.us-west-2.amazonaws.com/stage';
 
 // Initialize database service
 const db = DatabaseService.getInstance();
@@ -11,8 +14,15 @@ const syncService = SyncService.getInstance();
 // Initialize auth service
 const authService = AuthService.getInstance();
 
-// Set up IPC handlers for database operations
+/**
+ * Set up IPC handlers for database operations
+ */
 export function setupDatabaseIpcHandlers(): void {
+  // General
+  ipcMain.handle('db:get-user-id', () => {
+    return authService.getUserId();
+  });
+
   // Pages
   ipcMain.handle('db:get-pages', (_event, parentId?: string) => {
     return db.getPages(parentId);
@@ -127,6 +137,17 @@ export function setupDatabaseIpcHandlers(): void {
       const result = db.createBlock(sanitizedBlockData);
       console.log(' [ELECTRON IPC] Block created successfully:', result.id);
       
+      // Process block for embeddings if it has content
+      if (sanitizedBlockData.content && sanitizedBlockData.type === 'text') {
+        try {
+          // Send to embeddings API when online
+          processBlockForEmbedding(result, userId);
+        } catch (embeddingError) {
+          console.error(' [ELECTRON IPC] Error processing block for embedding:', embeddingError);
+          // Continue even if embedding fails - we don't want to block the UI
+        }
+      }
+      
       return result;
     } catch (error) {
       console.error(' [ELECTRON IPC] Error creating block:', error);
@@ -162,6 +183,22 @@ export function setupDatabaseIpcHandlers(): void {
       
       if (result) {
         console.log(' [ELECTRON IPC] Block updated successfully:', id);
+        
+        // Process block for embeddings if content was updated
+        if (sanitizedUpdates.content && result.type === 'text') {
+          try {
+            // Get the current user ID
+            const userId = authService.getUserId();
+            if (userId) {
+              // Send to embeddings API when online
+              processBlockForEmbedding(result, userId);
+            }
+          } catch (embeddingError) {
+            console.error(' [ELECTRON IPC] Error processing updated block for embedding:', embeddingError);
+            // Continue even if embedding fails - we don't want to block the UI
+          }
+        }
+        
         return result;
       } else {
         console.error(' [ELECTRON IPC] Block not found:', id);
@@ -183,9 +220,179 @@ export function setupDatabaseIpcHandlers(): void {
     return { success: true };
   });
 
-  // Sync status
-  ipcMain.handle('db:get-pending-changes-count', () => {
+  // Sync
+  ipcMain.handle('db:sync', async () => {
+    return await syncService.syncWithServer();
+  });
+
+  // Get pending sync count
+  ipcMain.handle('db:get-pending-sync-count', () => {
     const { pages, blocks } = db.getEntitiesToSync();
     return pages.length + blocks.length;
   });
+
+  // Chat
+  ipcMain.handle('chat:send-message', async (_event, messages: Array<{ role: string; content: string }>) => {
+    try {
+      console.log(' [ELECTRON IPC] Sending chat message');
+
+      if(!await syncService.checkNetworkStatus()) {
+        // TODO: Implement Ollama when Offline
+        console.log("TODO: Implement Ollama when Offline")
+        return;
+      }
+      
+      // Check if user is authenticated
+      if (!authService.isAuthenticated()) {
+        console.error(' [ELECTRON IPC] User not authenticated for chat');
+        throw new Error('User not authenticated');
+      }
+      
+      // Get access token
+      const accessToken = authService.getAccessToken();
+      if (!accessToken) {
+        console.error(' [ELECTRON IPC] No access token available for chat');
+        throw new Error('No access token available');
+      }
+      
+      // Send to chat API
+      const response = await fetch(`${API_URL}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': accessToken
+        },
+        body: JSON.stringify({ messages }),
+      });
+      
+      // Check if response is ok
+      if (!response.ok) {
+        console.error(` [ELECTRON IPC] Chat API error: ${response.status} ${response.statusText}`);
+        throw new Error(`Chat API error: ${response.status} ${response.statusText}`);
+      }
+      
+      // Get response text
+      const responseText = await response.text();
+      console.log(' [ELECTRON IPC] Chat response received');
+      
+      // Parse the event stream and extract the assistant's message
+      const events = responseText.split('\n\n').filter(Boolean);
+      let assistantMessage = '';
+      
+      for (const event of events) {
+        if (event.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(event.substring(6));
+            if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
+              assistantMessage += data.choices[0].delta.content;
+            }
+          } catch (e) {
+            console.error(' [ELECTRON IPC] Error parsing event stream:', e);
+          }
+        }
+      }
+      
+      return {
+        role: 'assistant',
+        content: assistantMessage || 'Sorry, I could not generate a response.'
+      };
+    } catch (error) {
+      console.error(' [ELECTRON IPC] Error in chat:', error);
+      throw error;
+    }
+  });
+}
+
+/**
+ * Process a single block for embedding
+ */
+async function processBlockForEmbedding(block: Block, userId: string): Promise<void> {
+  try {
+    // Check if we're online and authenticated
+    const auth = AuthService.getInstance();
+    if (!auth.isAuthenticated()) {
+      console.log(' [ELECTRON IPC] Not authenticated, skipping embedding generation');
+      return;
+    }
+    
+    console.log(` [ELECTRON IPC] Processing block ${block.id} for embedding`);
+    
+    // Get access token
+    const accessToken = auth.getAccessToken();
+    if (!accessToken) {
+      console.log(' [ELECTRON IPC] No access token available, skipping embedding generation');
+      return;
+    }
+    
+    // Send to embeddings API
+    const response = await fetch(`${API_URL}/api/embeddings/generate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cookie': accessToken
+      },
+      body: JSON.stringify({
+        blockId: block.id,
+        content: block.content
+      })
+    });
+    
+    if (!response.ok) {
+      console.error(` [ELECTRON IPC] Error from embeddings API: ${response.status} ${response.statusText}`);
+      return;
+    }
+    
+    console.log(` [ELECTRON IPC] Successfully processed block ${block.id} for embedding`);
+  } catch (error) {
+    console.error(' [ELECTRON IPC] Error processing block for embedding:', error);
+  }
+}
+
+/**
+ * Process multiple blocks for embeddings
+ */
+async function processBlocksForEmbeddings(blocks: Block[], userId: string): Promise<void> {
+  try {
+    // Check if we're online and authenticated
+    const auth = AuthService.getInstance();
+    if (!auth.isAuthenticated()) {
+      console.log(' [ELECTRON IPC] Not authenticated, skipping embedding generation');
+      return;
+    }
+    
+    console.log(` [ELECTRON IPC] Processing ${blocks.length} blocks for embeddings`);
+    
+    // Get access token
+    const accessToken = auth.getAccessToken();
+    if (!accessToken) {
+      console.log(' [ELECTRON IPC] No access token available, skipping embedding generation');
+      return;
+    }
+    
+    // Send to embeddings API
+    const response = await fetch(`${API_URL}/api/embeddings/process`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cookie': accessToken
+      },
+      body: JSON.stringify({
+        blocks: blocks.map(block => ({
+          id: block.id,
+          user_id: userId,
+          content: block.content,
+          type: block.type
+        }))
+      })
+    });
+    
+    if (!response.ok) {
+      console.error(` [ELECTRON IPC] Error from embeddings API: ${response.status} ${response.statusText}`);
+      return;
+    }
+    
+    console.log(` [ELECTRON IPC] Successfully processed ${blocks.length} blocks for embeddings`);
+  } catch (error) {
+    console.error(' [ELECTRON IPC] Error processing blocks for embeddings:', error);
+  }
 }

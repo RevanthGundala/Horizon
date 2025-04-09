@@ -1,0 +1,60 @@
+.sidebar-create-page {
+  padding: 8px 12px;
+  margin: 8px 0;
+}
+
+.create-page-button {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px dashed #ddd;
+  border-radius: 4px;
+  background: none;
+  color: #666;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s;
+}
+
+.create-page-button:hover {
+  border-color: #999;
+  color: #333;
+}
+
+.create-page-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.create-page-input {
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.create-page-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.create-page-submit,
+.create-page-cancel {
+  flex: 1;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.create-page-submit {
+  background-color: #4a90e2;
+  color: white;
+  border: none;
+}
+
+.create-page-cancel {
+  background: none;
+  border: 1px solid #ddd;
+  color: #666;
+}

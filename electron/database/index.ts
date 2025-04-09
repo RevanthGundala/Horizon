@@ -43,12 +43,6 @@ export interface SyncLog {
   error_message: string | null;
 }
 
-export interface NetworkStatus {
-  id: number;
-  is_online: boolean;
-  last_checked: string;
-}
-
 class DatabaseService {
   private db: Database.Database;
   private static instance: DatabaseService;
@@ -513,26 +507,6 @@ class DatabaseService {
       synced_at: now,
       error_message: errorMessage || null
     });
-  }
-
-  // Network status operations
-  public updateNetworkStatus(isOnline: boolean): void {
-    const now = new Date().toISOString();
-    
-    const stmt = this.db.prepare(`
-      UPDATE network_status 
-      SET is_online = ?, 
-          last_checked = ?
-      WHERE id = 1
-    `);
-    
-    // Convert boolean to number (1 or 0) for SQLite compatibility
-    stmt.run(isOnline ? 1 : 0, now);
-  }
-
-  public getNetworkStatus(): { is_online: boolean; last_checked: string } {
-    const stmt = this.db.prepare('SELECT is_online, last_checked FROM network_status WHERE id = 1');
-    return stmt.get() as { is_online: boolean; last_checked: string };
   }
 
   // Sync operations

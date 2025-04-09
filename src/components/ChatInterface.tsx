@@ -1,34 +1,27 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import '../styles/ChatInterface.css';
-
-interface Message {
-  id: string;
-  content: string;
-  sender: 'user' | 'assistant';
-  timestamp: Date;
-}
 
 interface ChatInterfaceProps {
   isOpen: boolean;
   onClose: () => void;
-  onSendMessage: (message: string) => Promise<string>;
+}
+
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
 }
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ 
   isOpen, 
-  onClose,
-  onSendMessage
+  onClose
 }) => {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: '1',
-      content: 'Hello! How can I help you today?',
-      sender: 'assistant',
-      timestamp: new Date()
-    }
-  ]);
-  const [newMessage, setNewMessage] = useState('');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -48,71 +41,77 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   }, [isOpen]);
 
-  // Handle sending a message
-  const handleSendMessage = async () => {
-    if (newMessage.trim() === '' || isLoading) return;
+  // Format timestamp
+  const formatTime = (date: Date = new Date()) => {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  // Auto-resize textarea
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value);
+    e.target.style.height = 'auto';
+    e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+  };
+
+  // Handle form submission
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!input.trim() || isLoading) return;
     
-    // Add user message
-    const userMessage: Message = {
+    // Create a new user message
+    const userMessage: ChatMessage = {
       id: Date.now().toString(),
-      content: newMessage,
-      sender: 'user',
+      role: 'user',
+      content: input.trim(),
       timestamp: new Date()
     };
     
+    // Add user message to the chat
     setMessages(prev => [...prev, userMessage]);
-    setNewMessage('');
+    setInput('');
     setIsLoading(true);
+    setError(null);
+    
+    // Reset textarea height
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
     
     try {
-      // Call the API to get a response
-      const response = await onSendMessage(newMessage);
+      // Format messages for the API
+      const messageHistory = [
+        ...messages.map(msg => ({ role: msg.role, content: msg.content })),
+        { role: userMessage.role, content: userMessage.content }
+      ];
       
-      // Add assistant message
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        content: response,
-        sender: 'assistant',
-        timestamp: new Date()
-      };
+      // Check if electron is available
+      if (!window.electron) {
+        throw new Error('Electron IPC is not available');
+      }
       
-      setMessages(prev => [...prev, assistantMessage]);
-    } catch (error) {
-      console.error('Error sending message:', error);
+      // Send message via IPC
+      const response = await window.electron.ipcRenderer.invoke('chat:send-message', messageHistory);
       
-      // Add error message
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        content: 'Sorry, there was an error processing your request.',
-        sender: 'assistant',
-        timestamp: new Date()
-      };
-      
-      setMessages(prev => [...prev, errorMessage]);
+      // Add assistant response to the chat
+      setMessages(prev => [
+        ...prev, 
+        {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: response.content,
+          timestamp: new Date()
+        }
+      ]);
+    } catch (err) {
+      console.error('Chat error:', err);
+      setError(err instanceof Error ? err.message : 'An error occurred while sending your message');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Handle key press (Enter to send)
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSendMessage();
-    }
-  };
-
-  // Format timestamp
-  const formatTime = (date: Date) => {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
-
-  // Auto-resize textarea
-  const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setNewMessage(e.target.value);
-    e.target.style.height = 'auto';
-    e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
-  };
+  // Determine if there's a CORS error
+  const isCorsError = error?.includes('CORS') || error?.includes('Failed to fetch');
 
   return (
     <div className={`chat-interface ${isOpen ? 'open' : ''}`}>
@@ -122,10 +121,17 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       </div>
       
       <div className="chat-messages">
-        {messages.map(message => (
+        {!messages.length && (
+          <div className="message assistant-message">
+            <div className="message-content">Hello! How can I help you today?</div>
+            <div className="message-timestamp">{formatTime()}</div>
+          </div>
+        )}
+        
+        {messages.map((message) => (
           <div 
             key={message.id} 
-            className={`message ${message.sender === 'user' ? 'user-message' : 'assistant-message'}`}
+            className={`message ${message.role === 'user' ? 'user-message' : 'assistant-message'}`}
           >
             <div className="message-content">{message.content}</div>
             <div className="message-timestamp">{formatTime(message.timestamp)}</div>
@@ -142,24 +148,41 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           </div>
         )}
         
+        {error && (
+          <div className="message error-message">
+            <div className="message-content">
+              {isCorsError ? 
+                "Unable to connect to the chat server. This may be due to network issues." :
+                `Error: ${error}`}
+            </div>
+            <div className="message-timestamp">{formatTime()}</div>
+          </div>
+        )}
+        
         <div ref={messagesEndRef} />
       </div>
       
-      <div className="chat-input-container">
+      <form onSubmit={handleSubmit} className="chat-input-container">
         <textarea
           ref={inputRef}
-          value={newMessage}
-          onChange={handleTextareaChange}
-          onKeyPress={handleKeyPress}
+          value={input}
+          onChange={handleInputChange}
           placeholder="Type a message..."
           className="chat-input"
           rows={1}
           disabled={isLoading}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              const form = e.currentTarget.form;
+              if (form && input.trim()) form.requestSubmit();
+            }
+          }}
         />
         <button 
-          className={`send-button ${newMessage.trim() ? 'active' : ''}`}
-          onClick={handleSendMessage}
-          disabled={!newMessage.trim() || isLoading}
+          type="submit"
+          className={`send-button ${input.trim() ? 'active' : ''}`}
+          disabled={!input.trim() || isLoading}
         >
           {isLoading ? (
             <div className="send-loading-spinner"></div>
@@ -170,7 +193,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             </svg>
           )}
         </button>
-      </div>
+      </form>
     </div>
   );
 };

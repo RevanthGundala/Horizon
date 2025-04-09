@@ -15,9 +15,6 @@ import { usePages, useCreatePage } from './hooks/usePages';
 import { useAuth } from './contexts/auth-context';
 
 function App() {
-  const [searchResult, setSearchResult] = useState<string | null>(null);
-  const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [isSearchLoading, setIsSearchLoading] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [cards, setCards] = useState<Card[]>([]);
   
@@ -46,42 +43,9 @@ function App() {
     }
   }, [pages, isPagesLoading]);
 
-  // Handle search submission
-  const handleSearchSubmit = async (query: string) => {
-    try {
-     
-    } catch (error) {
-      console.error('Search error:', error);
-      setSearchResult('An error occurred while processing your search.');
-    } finally {
-      setIsSearchLoading(false);
-    }
-  };
-
-  // Handle search cancellation
-  const handleSearchCancel = () => {
-    setIsSearchLoading(false);
-    // In a real application, you would also abort the fetch request
-  };
-
-  // Handle search focus change
-  const handleSearchFocusChange = (focused: boolean) => {
-    setIsSearchFocused(focused);
-  };
-
   // Toggle chat interface
   const toggleChat = () => {
     setIsChatOpen(!isChatOpen);
-  };
-
-  // Handle sending a chat message
-  const handleSendChatMessage = async (message: string): Promise<string> => {
-    try {
-      return "I'm sorry, I couldn't process your request.";
-    } catch (error) {
-      console.error('Chat error:', error);
-      return "An error occurred while processing your message.";
-    }
   };
 
   // Handle creating a new card
@@ -122,7 +86,7 @@ function App() {
 
   return (
       <div className="app-page">
-        <div className={`app-content ${isSearchFocused ? 'dimmed' : ''}`}>
+        <div className="app-content">
           <header className="App-header">
             <h2>Welcome to Horizon</h2>
             <p>Your canvas for ideas and knowledge</p>
@@ -136,13 +100,6 @@ function App() {
               <CardGrid cards={cards} onCreateCard={handleCreateCard} />
             )}
             
-            {/* Display search results if available */}
-            {searchResult && (
-              <div className="search-results">
-                <h3>Search Results</h3>
-                <p>{searchResult}</p>
-              </div>
-            )}
           </main>
           
           <footer className="App-footer">
@@ -182,7 +139,6 @@ function App() {
         <ChatInterface 
           isOpen={isChatOpen}
           onClose={() => setIsChatOpen(false)}
-          onSendMessage={handleSendChatMessage}
         />
       </div>
   );
