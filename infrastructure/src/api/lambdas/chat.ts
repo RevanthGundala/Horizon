@@ -2,7 +2,8 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { createHeaders, handleOptions, withAuth } from "../utils/middleware";
 import { streamText } from "ai"
 import { openai } from "@ai-sdk/openai"
-import { search } from "../tools";
+import { search, ragSearch } from "../tools";
+import { v4 as uuidv4 } from 'uuid';
 
 const chatHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIGatewayProxyResult> => {
   // Handle OPTIONS requests for CORS preflight
@@ -32,18 +33,27 @@ const chatHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIG
     }
 
     // System prompt for the AI
-    const systemPrompt = `You are an AI assistant that helps users with their notes and documents.
-You have access to the user's knowledge base through the search tool.
-When answering questions, try to use the search tool to find relevant information.`;
+    const systemPrompt = `You are an AI assistant that helps users with their notes and documents in the Horizon app.
+You have access to the user's knowledge base through two powerful tools:
+1. search - Use this to find and list relevant notes and blocks that might answer a question
+2. ragSearch - Use this to get comprehensive context for in-depth questions that need detailed answers
+
+TOOL SELECTION GUIDE:
+- For simple information retrieval or to find specific notes, use the 'search' tool
+- For answering detailed questions or synthesizing information, use the 'ragSearch' tool
+- Always prefer the appropriate tool based on the complexity of the user's query
+
+When using information from the user's notes, always cite your sources so they know where the information came from.`;
 
     try {
       // Stream the response using the AI SDK
-      const result = await streamText({
-        model: openai("gpt-4o-mini"),
+      const result = streamText({
+        model: openai("gpt-4o"), // Using higher quality model for better RAG capabilities
         messages,
         system: systemPrompt,
         tools: {
           search: search(user.id),
+          ragSearch: ragSearch(user.id),
         },
       });
 
@@ -56,26 +66,18 @@ When answering questions, try to use the search tool to find relevant informatio
       // Get origin for CORS headers
       const origin = event.headers.origin || event.headers.Origin;
       
-      // Return the response in a format compatible with AWS Lambda
+      // Return response with streaming indicator
       return {
-        statusCode: streamResponse.status,
+        statusCode: 200,
         headers: {
-          // Important: Set the correct content type for streaming
-          'Content-Type': 'text/event-stream',
-          // Add CORS headers
+          'Content-Type': 'application/json',
           'Access-Control-Allow-Origin': origin || process.env.FRONTEND_URL || 'http://localhost:5173',
-          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Amz-Date, X-Api-Key, X-Amz-Security-Token, Cookie',
-          'Access-Control-Allow-Credentials': 'true',
-          'Access-Control-Expose-Headers': 'Content-Type, Content-Length',
-          // Streaming specific headers
-          'Cache-Control': 'no-cache, no-transform',
-          'Connection': 'keep-alive',
-          'X-Accel-Buffering': 'no',
           ...headers
         },
-        // Use the ReadableStream directly
-        body: await new Response(streamResponse.body).text(),
+        body: JSON.stringify({
+          stream: true,
+          streamUrl: `/chat/stream/${uuidv4()}` // Generate unique stream URL
+        }),
         isBase64Encoded: false
       };
     } catch (streamError) {

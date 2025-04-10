@@ -1,15 +1,15 @@
 {
   "name": "horizon",
   "version": "1.0.0",
-  "main": "dist/electron/main.js",
+  "main": "dist/electron/electron/main.js",
   "scripts": {
-    "dev": "bun run electron:build && concurrently \"bun run web:dev\" \"bun run electron:start\"",
+    "dev": "bun run electron:build && concurrently -k \"bun run web:dev\" \"wait-on http://localhost:5173 && bun run electron:start\"",
     "web:dev": "vite --port 5173",
     "build": "tsc && vite build",
     "gen-types": "npx supabase gen types typescript --project-id $PROJECT_REF --schema public > src/types/db.ts",
-    "electron:dev": "concurrently \"vite --port 5173\" \"bun run electron:start\"",
+    "electron:dev": "concurrently \"vite --port 5173\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "bun run build && tsc -p electron/tsconfig.json",
-    "electron:start": "wait-on http://localhost:5173 && electron .",
+    "electron:start": "electron .",
     "electron:package": "bun run electron:build && electron-builder",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

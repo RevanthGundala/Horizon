@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
-import DatabaseService, { Block, Folder, Note } from './index';
+import DatabaseService, { Block, Note } from './index';
 import SyncService from './sync';
 import AuthService from '../auth';
 
@@ -23,45 +23,9 @@ export function setupDatabaseIpcHandlers(): void {
     return authService.getUserId();
   });
 
-  // Folders
-  ipcMain.handle('db:get-folders', (_event, workspaceId?: string) => {
-    return db.getFolders(workspaceId);
-  });
-
-  ipcMain.handle('db:get-folder', (_event, id: string) => {
-    return db.getFolder(id);
-  });
-
-  ipcMain.handle('db:create-folder', (_event, folderData: Omit<Folder, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>) => {
-    try {
-      const id = folderData.id || uuidv4();
-      const userId = authService.getUserId() || folderData.user_id || 'anonymous';
-      
-      const folder = {
-        ...folderData,
-        id,
-        user_id: userId
-      };
-      
-      return db.createFolder(folder);
-    } catch (error) {
-      console.error('Error creating folder:', error);
-      throw error;
-    }
-  });
-
-  ipcMain.handle('db:update-folder', (_event, id: string, updates: Partial<Omit<Folder, 'id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>) => {
-    return db.updateFolder(id, updates);
-  });
-
-  ipcMain.handle('db:delete-folder', (_event, id: string) => {
-    db.deleteFolder(id);
-    return { success: true };
-  });
-
   // Notes
-  ipcMain.handle('db:get-notes', (_event, parentId?: string) => {
-    return db.getNotes(parentId);
+  ipcMain.handle('db:get-notes', (_event, workspaceId?: string, parentId?: string) => {
+    return db.getNotes(workspaceId, parentId);
   });
 
   ipcMain.handle('db:get-note', (_event, id: string) => {
@@ -73,13 +37,12 @@ export function setupDatabaseIpcHandlers(): void {
   ipcMain.handle('db:create-note', (_event, noteData: Omit<Note, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>) => {
     try {
       const id = noteData.id || uuidv4();
-      const userId = authService.getUserId() || noteData.user_id || 'anonymous';
+      const userId = authService.getUserId() || 'anonymous';
       
       const note = {
         ...noteData,
         id,
-        user_id: userId,
-        folder_id: noteData.folder_id || null
+        user_id: userId
       };
       
       return db.createNote(note);
@@ -99,8 +62,8 @@ export function setupDatabaseIpcHandlers(): void {
   });
 
   // Blocks
-  ipcMain.handle('db:get-blocks', (_event, pageId: string) => {
-    return db.getBlocks(pageId);
+  ipcMain.handle('db:get-blocks', (_event, noteId: string) => {
+    return db.getBlocks(noteId);
   });
 
   ipcMain.handle('db:get-block', (_event, id: string) => {
@@ -167,7 +130,7 @@ export function setupDatabaseIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('db:update-block', (_event, id: string, updates: Partial<Omit<Block, 'id' | 'page_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>) => {
+  ipcMain.handle('db:update-block', (_event, id: string, updates: Partial<Omit<Block, 'id' | 'note_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>) => {
     try {
       console.log(' [ELECTRON IPC] Updating block:', id);
       console.log(' [ELECTRON IPC] Update data:', JSON.stringify({
@@ -176,7 +139,7 @@ export function setupDatabaseIpcHandlers(): void {
       }, null, 2));
       
       // Create a sanitized updates object with only the fields that exist in the database schema
-      const sanitizedUpdates: Partial<Omit<Block, 'id' | 'page_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>> = {};
+      const sanitizedUpdates: Partial<Omit<Block, 'id' | 'note_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>> = {};
       
       // Only include fields that are present in the updates
       if (updates.type !== undefined) sanitizedUpdates.type = updates.type;
@@ -268,11 +231,35 @@ export function setupDatabaseIpcHandlers(): void {
       }
       
       // Send to chat API
+      console.log(`Sending chat request to ${API_URL}/api/chat`);
+      
+      // If API is not available, return a friendly message
+      try {
+        const statusCheck = await fetch(`${API_URL}/api/status`, {
+          method: 'GET'
+        });
+        
+        if (!statusCheck.ok) {
+          console.log(` [ELECTRON IPC] API unavailable for chat: ${statusCheck.status}`);
+          return {
+            role: 'assistant',
+            content: "I'm sorry, but I'm currently unable to connect to the knowledge base. Check your internet connection and try again later."
+          };
+        }
+      } catch (error) {
+        console.log(` [ELECTRON IPC] API connection error for chat:`, error);
+        return {
+          role: 'assistant',
+          content: "I'm sorry, but I'm currently unable to connect to the knowledge base. Check your internet connection and try again later."
+        };
+      }
+      
       const response = await fetch(`${API_URL}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Cookie': accessToken
+          'Cookie': accessToken,
+          'X-Authorization': `Bearer ${accessToken}` // Try both auth methods
         },
         body: JSON.stringify({ messages }),
       });
@@ -280,7 +267,13 @@ export function setupDatabaseIpcHandlers(): void {
       // Check if response is ok
       if (!response.ok) {
         console.error(` [ELECTRON IPC] Chat API error: ${response.status} ${response.statusText}`);
-        throw new Error(`Chat API error: ${response.status} ${response.statusText}`);
+        // Instead of throwing an error, return a friendly message
+        return {
+          role: 'assistant',
+          content: "I'm sorry, but I encountered an error processing your request. " +
+                   "This could be due to a temporary service disruption. " + 
+                   "Please try again later or contact support if the issue persists."
+        };
       }
       
       // Get response text
@@ -310,7 +303,13 @@ export function setupDatabaseIpcHandlers(): void {
       };
     } catch (error) {
       console.error(' [ELECTRON IPC] Error in chat:', error);
-      throw error;
+      // Return a helpful message instead of throwing
+      return {
+        role: 'assistant',
+        content: "I'm sorry, but I encountered an unexpected error. " +
+                "This might be a temporary issue with the service. " +
+                "Please try again later."
+      };
     }
   });
 }

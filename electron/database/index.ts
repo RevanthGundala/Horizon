@@ -2,6 +2,9 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { app } from 'electron';
 import fs from 'fs';
+import crypto from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
+import { SQL_SCHEMAS } from '../../shared/sql-schemas';
 
 // Types
 export interface Workspace {
@@ -11,32 +14,21 @@ export interface Workspace {
   is_favorite: boolean;
   created_at: string;
   updated_at: string;
-}
-
-export interface Folder {
-  id: string;
-  workspace_id: string;
-  user_id: string;
-  name: string;
-  is_favorite: boolean;
-  created_at: string;
-  updated_at: string;
-  sync_status: 'synced' | 'pending' | 'conflict';
-  server_updated_at: string | null;
+  sync_status: 'synced' | 'pending';
+  server_updated_at?: string;
 }
 
 export interface Note {
   id: string;
-  title: string;
   workspace_id: string;
-  folder_id: string | null;
-  user_id: string;
+  parent_id: string | null;
+  title: string;
+  content?: string;
   is_favorite: boolean;
-  type: string | null;
   created_at: string;
   updated_at: string;
-  sync_status: 'synced' | 'pending' | 'conflict';
-  server_updated_at: string | null;
+  sync_status: 'synced' | 'pending';
+  user_id: string;
 }
 
 export interface Block {
@@ -49,13 +41,12 @@ export interface Block {
   order_index: number;
   created_at: string;
   updated_at: string;
-  sync_status: 'synced' | 'pending' | 'conflict';
-  server_updated_at: string | null;
+  sync_status: 'synced' | 'pending';
 }
 
 export interface SyncLog {
   id: string;
-  entity_type: 'note' | 'block' | 'folder';
+  entity_type: 'workspace' | 'note' | 'block';
   entity_id: string;
   action: 'create' | 'update' | 'delete';
   status: 'pending' | 'success' | 'error';
@@ -103,85 +94,11 @@ class DatabaseService {
   }
 
   private initSchema(): void {
-    // Create workspaces table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS workspaces (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        name TEXT NOT NULL,
-        is_favorite INTEGER DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-    `);
-
-    // Create folders table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS folders (
-        id TEXT PRIMARY KEY,
-        workspace_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        name TEXT NOT NULL,
-        is_favorite INTEGER DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        sync_status TEXT NOT NULL DEFAULT 'synced',
-        server_updated_at TEXT,
-        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-      );
-    `);
-
-    // Create notes table (previously pages)
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS notes (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        workspace_id TEXT,
-        folder_id TEXT,
-        user_id TEXT NOT NULL,
-        is_favorite INTEGER DEFAULT 0,
-        type TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        sync_status TEXT NOT NULL DEFAULT 'synced',
-        server_updated_at TEXT,
-        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
-        FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE
-      );
-    `);
-
-    // Create blocks table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS blocks (
-        id TEXT PRIMARY KEY,
-        note_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        type TEXT NOT NULL,
-        content TEXT,
-        metadata TEXT,
-        order_index INTEGER NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        sync_status TEXT NOT NULL DEFAULT 'synced',
-        server_updated_at TEXT,
-        FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
-      );
-    `);
-
-    // Create sync_log table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS sync_log (
-        id TEXT PRIMARY KEY,
-        entity_type TEXT NOT NULL,
-        entity_id TEXT NOT NULL,
-        action TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        payload TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        synced_at TEXT,
-        error_message TEXT
-      );
-    `);
+    this.db.exec(SQL_SCHEMAS.WORKSPACES);
+    this.db.exec(SQL_SCHEMAS.NOTES);
+    this.db.exec(SQL_SCHEMAS.BLOCKS);
+    this.db.exec(SQL_SCHEMAS.SYNC_LOG);
+    this.db.exec(SQL_SCHEMAS.USERS);
   }
 
   // Workspaces CRUD operations
@@ -195,7 +112,7 @@ class DatabaseService {
     return stmt.get(id) as Workspace | undefined;
   }
 
-  public createWorkspace(workspace: Omit<Workspace, 'created_at' | 'updated_at'>): Workspace {
+  public createWorkspace(workspace: Omit<Workspace, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>): Workspace {
     console.log(`🔶 [ELECTRON DB] Creating workspace with ID: ${workspace.id}, name: ${workspace.name}`);
     console.log(`🔶 [ELECTRON DB] User ID for workspace: ${workspace.user_id}`);
     
@@ -215,8 +132,8 @@ class DatabaseService {
       
       // Use positional parameters for better SQLite compatibility
       const stmt = this.db.prepare(`
-        INSERT INTO workspaces (id, user_id, name, is_favorite, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO workspaces (id, user_id, name, is_favorite, created_at, updated_at, sync_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
       
       stmt.run(
@@ -225,7 +142,8 @@ class DatabaseService {
         workspace.name,
         is_favorite_value, // Use the integer value
         now,
-        now
+        now,
+        'pending'
       );
       
       console.log(`🔶 [ELECTRON DB] Successfully inserted workspace with ID: ${workspace.id}`);
@@ -237,7 +155,8 @@ class DatabaseService {
         name: workspace.name,
         is_favorite: Boolean(is_favorite_value), // Convert back to boolean for TypeScript
         created_at: now,
-        updated_at: now
+        updated_at: now,
+        sync_status: 'pending'
       };
       
       // Add to sync log
@@ -250,7 +169,7 @@ class DatabaseService {
     }
   }
 
-  public updateWorkspace(id: string, updates: Partial<Omit<Workspace, 'id' | 'created_at' | 'updated_at'>>): Workspace | undefined {
+  public updateWorkspace(id: string, updates: Partial<Omit<Workspace, 'id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>): Workspace | undefined {
     const workspace = this.getWorkspace(id);
     if (!workspace) return undefined;
 
@@ -263,7 +182,8 @@ class DatabaseService {
       UPDATE workspaces 
       SET name = ?, 
           is_favorite = ?, 
-          updated_at = ?
+          updated_at = ?,
+          sync_status = ?
       WHERE id = ?
     `);
     
@@ -271,13 +191,16 @@ class DatabaseService {
       updates.name || workspace.name,
       is_favorite_value,
       now, // updated_at
+      'pending', // sync_status
       id
     );
     
     const updatedWorkspace: Workspace = {
       ...workspace,
       ...updates,
-      updated_at: now
+      updated_at: now,
+      sync_status: 'pending',
+      is_favorite: Boolean(is_favorite_value) // Ensure boolean type
     };
     
     // Add to sync log
@@ -297,142 +220,21 @@ class DatabaseService {
     stmt.run(id);
   }
 
-  // Folders CRUD operations
-  public getFolders(workspaceId?: string): Folder[] {
-    const query = workspaceId 
-      ? 'SELECT * FROM folders WHERE workspace_id = ? ORDER BY updated_at DESC'
-      : 'SELECT * FROM folders WHERE workspace_id IS NULL ORDER BY updated_at DESC';
-    
-    const stmt = this.db.prepare(query);
-    return workspaceId ? stmt.all(workspaceId) as Folder[] : stmt.all() as Folder[];
-  }
-
-  public getFolder(id: string): Folder | undefined {
-    const stmt = this.db.prepare('SELECT * FROM folders WHERE id = ?');
-    return stmt.get(id) as Folder | undefined;
-  }
-
-  public createFolder(folder: Omit<Folder, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>): Folder {
-    console.log(`🔶 [ELECTRON DB] Creating folder with ID: ${folder.id}, name: ${folder.name}`);
-    console.log(`🔶 [ELECTRON DB] User ID for folder: ${folder.user_id}`);
-    
-    const now = new Date().toISOString();
-    
-    try {
-      // Convert boolean to integer for SQLite
-      const is_favorite_value = folder.is_favorite ? 1 : 0;
-      
-      // Log the exact data we're about to insert
-      console.log(`🔶 [ELECTRON DB] Folder data before insert:`, {
-        id: folder.id,
-        workspace_id: folder.workspace_id,
-        user_id: folder.user_id,
-        name: folder.name,
-        is_favorite: is_favorite_value, // Show the integer value
-      });
-      
-      // Use positional parameters for better SQLite compatibility
-      const stmt = this.db.prepare(`
-        INSERT INTO folders (id, workspace_id, user_id, name, is_favorite, created_at, updated_at, sync_status, server_updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      
-      stmt.run(
-        folder.id,
-        folder.workspace_id,
-        folder.user_id,
-        folder.name,
-        is_favorite_value, // Use the integer value
-        now,
-        now,
-        'synced', // Default to synced since we're creating it
-        null
-      );
-      
-      console.log(`🔶 [ELECTRON DB] Successfully inserted folder with ID: ${folder.id}`);
-      
-      // Create the complete Folder object for the return value
-      const newFolder: Folder = {
-        id: folder.id,
-        workspace_id: folder.workspace_id,
-        user_id: folder.user_id,
-        name: folder.name,
-        is_favorite: Boolean(is_favorite_value), // Convert back to boolean for TypeScript
-        created_at: now,
-        updated_at: now,
-        sync_status: 'synced', // Default to synced since we're creating it
-        server_updated_at: null
-      };
-      
-      // Add to sync log
-      this.addToSyncLog('folder', newFolder.id, 'create', JSON.stringify(newFolder));
-      
-      return newFolder;
-    } catch (error) {
-      console.error(`🔶 [ELECTRON DB] Error inserting folder:`, error);
-      throw error;
-    }
-  }
-
-  public updateFolder(id: string, updates: Partial<Omit<Folder, 'id' | 'created_at' | 'updated_at'>>): Folder | undefined {
-    const folder = this.getFolder(id);
-    if (!folder) return undefined;
-
-    const now = new Date().toISOString();
-    
-    // Convert boolean to number for SQLite compatibility if present
-    const is_favorite_value = updates.is_favorite !== undefined ? (updates.is_favorite ? 1 : 0) : (folder.is_favorite ? 1 : 0);
-    
-    const stmt = this.db.prepare(`
-      UPDATE folders 
-      SET name = ?, 
-          is_favorite = ?, 
-          updated_at = ?,
-          sync_status = ?
-      WHERE id = ?
-    `);
-    
-    stmt.run(
-      updates.name || folder.name,
-      is_favorite_value,
-      now, // updated_at
-      'pending',
-      id
-    );
-    
-    const updatedFolder: Folder = {
-      ...folder,
-      ...updates,
-      updated_at: now
-    };
-    
-    // Add to sync log
-    this.addToSyncLog('folder', updatedFolder.id, 'update', JSON.stringify(updatedFolder));
-    
-    return updatedFolder;
-  }
-
-  public deleteFolder(id: string): void {
-    const folder = this.getFolder(id);
-    if (!folder) return;
-
-    // Add to sync log before deleting
-    this.addToSyncLog('folder', id, 'delete', JSON.stringify({ id }));
-    
-    const stmt = this.db.prepare('DELETE FROM folders WHERE id = ?');
-    stmt.run(id);
-  }
-
   // Notes CRUD operations
-  public getNotes(workspaceId?: string, folderId?: string): Note[] {
-    const query = workspaceId 
-      ? 'SELECT * FROM notes WHERE workspace_id = ? ORDER BY updated_at DESC'
-      : folderId 
-        ? 'SELECT * FROM notes WHERE folder_id = ? ORDER BY updated_at DESC'
-        : 'SELECT * FROM notes WHERE workspace_id IS NULL AND folder_id IS NULL ORDER BY updated_at DESC';
+  public getNotes(workspaceId?: string, parentId?: string): Note[] {
+    if (workspaceId && parentId) {
+      const stmt = this.db.prepare('SELECT * FROM notes WHERE workspace_id = ? AND parent_id = ? ORDER BY updated_at DESC');
+      return stmt.all(workspaceId, parentId) as Note[];
+    } else if (workspaceId) {
+      const stmt = this.db.prepare('SELECT * FROM notes WHERE workspace_id = ? AND parent_id IS NULL ORDER BY updated_at DESC');
+      return stmt.all(workspaceId) as Note[];
+    } else if (parentId) {
+      const stmt = this.db.prepare('SELECT * FROM notes WHERE parent_id = ? ORDER BY updated_at DESC');
+      return stmt.all(parentId) as Note[];
+    }
     
-    const stmt = this.db.prepare(query);
-    return workspaceId ? stmt.all(workspaceId) as Note[] : folderId ? stmt.all(folderId) as Note[] : stmt.all() as Note[];
+    const stmt = this.db.prepare('SELECT * FROM notes ORDER BY updated_at DESC');
+    return stmt.all() as Note[];
   }
 
   public getNote(id: string): Note | undefined {
@@ -440,9 +242,9 @@ class DatabaseService {
     return stmt.get(id) as Note | undefined;
   }
 
-  public createNote(note: Omit<Note, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>): Note {
-    console.log(`🔶 [ELECTRON DB] Creating note with ID: ${note.id}, title: ${note.title}`);
-    console.log(`🔶 [ELECTRON DB] User ID for note: ${note.user_id}`);
+  public createNote(note: Omit<Note, 'created_at' | 'updated_at' | 'sync_status'> & { id?: string, user_id: string }): Note {
+    const noteId = note.id || uuidv4();
+    console.log(`🔶 [ELECTRON DB] Creating note with ID: ${noteId}, title: ${note.title}`);
     
     const now = new Date().toISOString();
     
@@ -452,50 +254,47 @@ class DatabaseService {
       
       // Log the exact data we're about to insert
       console.log(`🔶 [ELECTRON DB] Note data before insert:`, {
-        id: note.id,
-        title: note.title,
+        id: noteId,
         workspace_id: note.workspace_id,
-        folder_id: note.folder_id,
-        user_id: note.user_id,
-        is_favorite: is_favorite_value, // Show the integer value
-        type: note.type
+        parent_id: note.parent_id,
+        title: note.title,
+        content: note.content,
+        is_favorite: is_favorite_value,
+        user_id: note.user_id
       });
       
       // Use positional parameters for better SQLite compatibility
       const stmt = this.db.prepare(`
-        INSERT INTO notes (id, title, workspace_id, folder_id, user_id, is_favorite, type, created_at, updated_at, sync_status, server_updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO notes (id, workspace_id, parent_id, title, content, is_favorite, created_at, updated_at, sync_status, user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
       `);
       
       stmt.run(
-        note.id,
-        note.title,
+        noteId,
         note.workspace_id,
-        note.folder_id,
-        note.user_id,
-        is_favorite_value, // Use the integer value
-        note.type || 'note',
+        note.parent_id,
+        note.title,
+        note.content,
+        is_favorite_value,
         now,
         now,
-        'pending',
-        null
+        note.user_id
       );
       
-      console.log(`🔶 [ELECTRON DB] Successfully inserted note with ID: ${note.id}`);
+      console.log(`🔶 [ELECTRON DB] Successfully inserted note with ID: ${noteId}`);
       
       // Create the complete Note object for the return value
       const newNote: Note = {
-        id: note.id,
-        title: note.title,
+        id: noteId,
         workspace_id: note.workspace_id,
-        folder_id: note.folder_id,
+        parent_id: note.parent_id,
+        title: note.title,
+        content: note.content,
+        is_favorite: Boolean(is_favorite_value),
         user_id: note.user_id,
-        is_favorite: Boolean(is_favorite_value), // Convert back to boolean for TypeScript
-        type: note.type || 'note',
         created_at: now,
         updated_at: now,
-        sync_status: 'pending',
-        server_updated_at: null
+        sync_status: 'pending'
       };
       
       // Add to sync log
@@ -508,7 +307,7 @@ class DatabaseService {
     }
   }
 
-  public updateNote(id: string, updates: Partial<Omit<Note, 'id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>): Note | undefined {
+  public updateNote(id: string, updates: Partial<Omit<Note, 'id' | 'created_at' | 'updated_at' | 'sync_status'>>): Note | undefined {
     const note = this.getNote(id);
     if (!note) return undefined;
 
@@ -520,10 +319,9 @@ class DatabaseService {
     const stmt = this.db.prepare(`
       UPDATE notes 
       SET title = ?, 
-          workspace_id = ?, 
-          folder_id = ?, 
+          content = ?, 
+          parent_id = ?, 
           is_favorite = ?, 
-          type = ?, 
           updated_at = ?,
           sync_status = ?
       WHERE id = ?
@@ -531,10 +329,9 @@ class DatabaseService {
     
     stmt.run(
       updates.title || note.title,
-      updates.workspace_id !== undefined ? updates.workspace_id : note.workspace_id,
-      updates.folder_id !== undefined ? updates.folder_id : note.folder_id,
+      updates.content || note.content,
+      updates.parent_id !== undefined ? updates.parent_id : note.parent_id,
       is_favorite_value,
-      updates.type || note.type,
       now, // updated_at
       'pending', // sync_status
       id
@@ -582,52 +379,77 @@ class DatabaseService {
     
     return blocks;
   }
+  
+  public getBlocksForWorkspace(workspaceId: string): Block[] {
+    console.log(`🔶 [ELECTRON DB] Getting all blocks for workspace: ${workspaceId}`);
+    
+    // First get all notes in the workspace
+    const notes = this.getNotes(workspaceId);
+    const noteIds = notes.map(note => note.id);
+    
+    if (noteIds.length === 0) {
+      console.log(`🔶 [ELECTRON DB] No notes found in workspace ${workspaceId}, returning empty blocks array`);
+      return [];
+    }
+    
+    // Then get all blocks for those notes
+    // Using a placeholders string with the right number of question marks
+    const placeholders = noteIds.map(() => '?').join(',');
+    const stmt = this.db.prepare(`SELECT * FROM blocks WHERE note_id IN (${placeholders}) ORDER BY note_id, order_index ASC`);
+    
+    // Execute with all note IDs as parameters
+    const blocks = stmt.all(...noteIds) as Block[];
+    console.log(`🔶 [ELECTRON DB] Found ${blocks.length} blocks across ${noteIds.length} notes in workspace ${workspaceId}`);
+    
+    return blocks;
+  }
 
   public getBlock(id: string): Block | undefined {
     const stmt = this.db.prepare('SELECT * FROM blocks WHERE id = ?');
     return stmt.get(id) as Block | undefined;
   }
 
-  public createBlock(block: Omit<Block, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>): Block {
+  public createBlock(block: Omit<Block, 'created_at' | 'updated_at' | 'sync_status'> & { id?: string, user_id: string }): Block {
     console.log(`🔶 [ELECTRON DB] Creating block for note: ${block.note_id}, type: ${block.type}`);
     
     const now = new Date().toISOString();
+    const blockId = block.id || uuidv4();
     
     try {
       // Log the exact data we're about to insert
       console.log(`🔶 [ELECTRON DB] Block data before insert:`, {
-        id: block.id,
+        id: blockId,
         note_id: block.note_id,
         user_id: block.user_id,
         type: block.type,
-        content: block.content ? `${block.content.substring(0, 50)}...` : null, // Truncate for logging
+        content: block.content ? `${block.content.substring(0, 50)}...` : null,
         metadata: block.metadata,
         order_index: block.order_index
       });
       
       // Use positional parameters for better SQLite compatibility
       const stmt = this.db.prepare(`
-        INSERT INTO blocks (id, note_id, user_id, type, content, metadata, order_index, created_at, updated_at, sync_status, server_updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO blocks (id, note_id, user_id, type, content, metadata, order_index, created_at, updated_at, sync_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
       `);
       
       stmt.run(
-        block.id,
+        blockId,
         block.note_id,
         block.user_id,
         block.type,
         block.content,
         block.metadata,
         block.order_index,
-        now, // created_at
-        now, // updated_at
-        'pending', // sync_status
-        null // server_updated_at
+        now,
+        now
       );
+      
+      console.log(`🔶 [ELECTRON DB] Successfully inserted block with ID: ${blockId}`);
       
       // Create the complete Block object for the return value
       const newBlock: Block = {
-        id: block.id,
+        id: blockId,
         note_id: block.note_id,
         user_id: block.user_id,
         type: block.type,
@@ -636,17 +458,11 @@ class DatabaseService {
         order_index: block.order_index,
         created_at: now,
         updated_at: now,
-        sync_status: 'pending',
-        server_updated_at: null
+        sync_status: 'pending'
       };
       
       // Add to sync log
       this.addToSyncLog('block', newBlock.id, 'create', JSON.stringify(newBlock));
-      
-      console.log(`🔶 [ELECTRON DB] Created block ${newBlock.id} for note ${newBlock.note_id}`);
-      if (newBlock.type === 'editor') {
-        console.log(`🔶 [ELECTRON DB] Created editor block with content length: ${newBlock.content ? newBlock.content.length : 0}`);
-      }
       
       return newBlock;
     } catch (error) {
@@ -655,7 +471,7 @@ class DatabaseService {
     }
   }
 
-  public updateBlock(id: string, updates: Partial<Omit<Block, 'id' | 'note_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>): Block | undefined {
+  public updateBlock(id: string, updates: Partial<Omit<Block, 'id' | 'note_id' | 'created_at' | 'updated_at' | 'sync_status'>>): Block | undefined {
     console.log(`🔶 [ELECTRON DB] Updating block: ${id}`);
     
     // Get the current block
@@ -675,7 +491,7 @@ class DatabaseService {
         ...currentBlock,
         ...updates,
         updated_at: now,
-        sync_status: 'pending' as 'synced' | 'pending' | 'conflict'
+        sync_status: 'pending' as 'synced' | 'pending'
       };
       
       // Log the data being updated (truncate content for logging)
@@ -764,7 +580,7 @@ class DatabaseService {
   }
 
   // Sync log operations
-  private addToSyncLog(entityType: 'note' | 'block' | 'workspace' | 'folder', entityId: string, action: 'create' | 'update' | 'delete', payload: string): void {
+  private addToSyncLog(entityType: 'workspace' | 'note' | 'block', entityId: string, action: 'create' | 'update' | 'delete', payload: string): void {
     const now = new Date().toISOString();
     const id = `${entityType}_${entityId}_${now}`;
     
@@ -801,21 +617,304 @@ class DatabaseService {
   }
 
   // Sync operations
-  public markEntityAsSynced(entityType: 'note' | 'block' | 'folder', entityId: string, serverUpdatedAt: string): void {
-    const table = entityType === 'note' ? 'notes' : entityType === 'block' ? 'blocks' : 'folders';
+  // Methods for direct CRUD operations (without adding to sync log)
+  // These are used by the sync system to avoid circular updates
+  
+  public createWorkspaceFromServer(workspace: Workspace, skipSyncLog = false): Workspace {
+    const now = new Date().toISOString();
+    const is_favorite_value = workspace.is_favorite ? 1 : 0;
     
     const stmt = this.db.prepare(`
-      UPDATE ${table} 
-      SET sync_status = 'synced',
-          server_updated_at = ?
+      INSERT INTO workspaces (id, user_id, name, is_favorite, created_at, updated_at, sync_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    stmt.run(
+      workspace.id,
+      workspace.user_id,
+      workspace.name,
+      is_favorite_value,
+      workspace.created_at || now,
+      workspace.updated_at || now,
+      'synced'
+    );
+    
+    const newWorkspace = {
+      ...workspace,
+      created_at: workspace.created_at || now,
+      updated_at: workspace.updated_at || now,
+      sync_status: 'synced' as 'synced' | 'pending'
+    };
+    
+    // Only add to sync log if not skipped
+    if (!skipSyncLog) {
+      this.addToSyncLog('workspace', newWorkspace.id, 'create', JSON.stringify(newWorkspace));
+    }
+    
+    return newWorkspace;
+  }
+  
+  public updateWorkspaceFromServer(id: string, updates: Partial<Workspace>, skipSyncLog = false): Workspace | undefined {
+    const workspace = this.getWorkspace(id);
+    if (!workspace) return undefined;
+    
+    const is_favorite_value = updates.is_favorite !== undefined ? (updates.is_favorite ? 1 : 0) : (workspace.is_favorite ? 1 : 0);
+    
+    const stmt = this.db.prepare(`
+      UPDATE workspaces 
+      SET name = ?, 
+          is_favorite = ?, 
+          updated_at = ?,
+          sync_status = ?
       WHERE id = ?
     `);
     
+    const now = updates.updated_at || new Date().toISOString();
+    
+    stmt.run(
+      updates.name || workspace.name,
+      is_favorite_value,
+      now,
+      skipSyncLog ? 'synced' : 'pending',
+      id
+    );
+    
+    const updatedWorkspace: Workspace = {
+      ...workspace,
+      ...updates,
+      is_favorite: Boolean(is_favorite_value),
+      updated_at: now,
+      sync_status: skipSyncLog ? 'synced' : 'pending'
+    };
+    
+    // Only add to sync log if not skipped
+    if (!skipSyncLog) {
+      this.addToSyncLog('workspace', updatedWorkspace.id, 'update', JSON.stringify(updatedWorkspace));
+    }
+    
+    return updatedWorkspace;
+  }
+  
+  public createNoteFromServer(note: Omit<Note, 'sync_status'>, skipSyncLog = false): Note {
+    const noteId = note.id || uuidv4();
+    const now = new Date().toISOString();
+    const is_favorite_value = note.is_favorite ? 1 : 0;
+    
+    const stmt = this.db.prepare(`
+      INSERT INTO notes (id, workspace_id, parent_id, title, content, is_favorite, created_at, updated_at, sync_status, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    stmt.run(
+      noteId,
+      note.workspace_id,
+      note.parent_id,
+      note.title,
+      note.content,
+      is_favorite_value,
+      note.created_at || now,
+      note.updated_at || now,
+      skipSyncLog ? 'synced' : 'pending',
+      note.user_id
+    );
+    
+    const newNote: Note = {
+      ...note,
+      id: noteId,
+      created_at: note.created_at || now,
+      updated_at: note.updated_at || now,
+      sync_status: skipSyncLog ? 'synced' : 'pending'
+    };
+    
+    // Only add to sync log if not skipped
+    if (!skipSyncLog) {
+      this.addToSyncLog('note', newNote.id, 'create', JSON.stringify(newNote));
+    }
+    
+    return newNote;
+  }
+  
+  public updateNoteFromServer(id: string, updates: Partial<Note>, skipSyncLog = false): Note | undefined {
+    const note = this.getNote(id);
+    if (!note) return undefined;
+    
+    const is_favorite_value = updates.is_favorite !== undefined ? (updates.is_favorite ? 1 : 0) : (note.is_favorite ? 1 : 0);
+    const now = updates.updated_at || new Date().toISOString();
+    
+    const stmt = this.db.prepare(`
+      UPDATE notes 
+      SET title = ?, 
+          content = ?, 
+          parent_id = ?, 
+          is_favorite = ?, 
+          updated_at = ?,
+          sync_status = ?
+      WHERE id = ?
+    `);
+    
+    stmt.run(
+      updates.title || note.title,
+      updates.content !== undefined ? updates.content : note.content,
+      updates.parent_id !== undefined ? updates.parent_id : note.parent_id,
+      is_favorite_value,
+      now,
+      skipSyncLog ? 'synced' : 'pending',
+      id
+    );
+    
+    const updatedNote: Note = {
+      ...note,
+      ...updates,
+      is_favorite: Boolean(is_favorite_value),
+      updated_at: now,
+      sync_status: skipSyncLog ? 'synced' : 'pending'
+    };
+    
+    // Only add to sync log if not skipped
+    if (!skipSyncLog) {
+      this.addToSyncLog('note', updatedNote.id, 'update', JSON.stringify(updatedNote));
+    }
+    
+    return updatedNote;
+  }
+  
+  public deleteNoteFromServer(id: string, skipSyncLog = false): void {
+    const note = this.getNote(id);
+    if (!note) return;
+    
+    // Only add to sync log if not skipped
+    if (!skipSyncLog) {
+      this.addToSyncLog('note', id, 'delete', JSON.stringify({ id }));
+    }
+    
+    const stmt = this.db.prepare('DELETE FROM notes WHERE id = ?');
+    stmt.run(id);
+  }
+  
+  public createBlockFromServer(block: Block, skipSyncLog = false): Block {
+    const blockId = block.id || uuidv4();
+    const now = new Date().toISOString();
+    
+    const stmt = this.db.prepare(`
+      INSERT INTO blocks (id, note_id, user_id, type, content, metadata, order_index, created_at, updated_at, sync_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    stmt.run(
+      blockId,
+      block.note_id,
+      block.user_id,
+      block.type,
+      block.content,
+      block.metadata,
+      block.order_index,
+      block.created_at || now,
+      block.updated_at || now,
+      skipSyncLog ? 'synced' : 'pending'
+    );
+    
+    const newBlock: Block = {
+      ...block,
+      id: blockId,
+      created_at: block.created_at || now,
+      updated_at: block.updated_at || now,
+      sync_status: skipSyncLog ? 'synced' : 'pending'
+    };
+    
+    // Only add to sync log if not skipped
+    if (!skipSyncLog) {
+      this.addToSyncLog('block', newBlock.id, 'create', JSON.stringify(newBlock));
+    }
+    
+    return newBlock;
+  }
+  
+  public updateBlockFromServer(id: string, updates: Partial<Block>, skipSyncLog = false): Block | undefined {
+    const block = this.getBlock(id);
+    if (!block) return undefined;
+    
+    const now = updates.updated_at || new Date().toISOString();
+    
+    const stmt = this.db.prepare(`
+      UPDATE blocks 
+      SET type = ?, 
+          content = ?, 
+          metadata = ?, 
+          order_index = ?, 
+          updated_at = ?,
+          sync_status = ?
+      WHERE id = ?
+    `);
+    
+    stmt.run(
+      updates.type || block.type,
+      updates.content !== undefined ? updates.content : block.content,
+      updates.metadata !== undefined ? updates.metadata : block.metadata,
+      updates.order_index !== undefined ? updates.order_index : block.order_index,
+      now,
+      skipSyncLog ? 'synced' : 'pending',
+      id
+    );
+    
+    const updatedBlock: Block = {
+      ...block,
+      ...updates,
+      updated_at: now,
+      sync_status: skipSyncLog ? 'synced' : 'pending'
+    };
+    
+    // Only add to sync log if not skipped
+    if (!skipSyncLog) {
+      this.addToSyncLog('block', updatedBlock.id, 'update', JSON.stringify(updatedBlock));
+    }
+    
+    return updatedBlock;
+  }
+  
+  public deleteBlockFromServer(id: string, skipSyncLog = false): void {
+    const block = this.getBlock(id);
+    if (!block) return;
+    
+    // Only add to sync log if not skipped
+    if (!skipSyncLog) {
+      this.addToSyncLog('block', id, 'delete', JSON.stringify({ id }));
+    }
+    
+    const stmt = this.db.prepare('DELETE FROM blocks WHERE id = ?');
+    stmt.run(id);
+  }
+  
+  public markEntityAsSynced(entityType: 'workspace' | 'note' | 'block', entityId: string, serverUpdatedAt: string): void {
+    const tableMap = {
+      workspace: 'workspaces',
+      note: 'notes',
+      block: 'blocks'
+    };
+    
+    const table = tableMap[entityType];
+    const stmt = this.db.prepare(`
+      UPDATE ${table} 
+      SET sync_status = 'synced', server_updated_at = ? 
+      WHERE id = ?
+    `);
     stmt.run(serverUpdatedAt, entityId);
   }
+  
+  // Convenience methods for marking specific entity types as synced
+  public markWorkspaceAsSynced(id: string, serverUpdatedAt: string): void {
+    this.markEntityAsSynced('workspace', id, serverUpdatedAt);
+  }
+  
+  public markNoteAsSynced(id: string, serverUpdatedAt: string): void {
+    this.markEntityAsSynced('note', id, serverUpdatedAt);
+  }
+  
+  public markBlockAsSynced(id: string, serverUpdatedAt: string): void {
+    this.markEntityAsSynced('block', id, serverUpdatedAt);
+  }
 
-  public markEntityAsConflict(entityType: 'note' | 'block' | 'folder', entityId: string): void {
-    const table = entityType === 'note' ? 'notes' : entityType === 'block' ? 'blocks' : 'folders';
+  public markEntityAsConflict(entityType: 'note' | 'block', entityId: string): void {
+    const table = entityType === 'note' ? 'notes' : 'blocks';
     
     const stmt = this.db.prepare(`
       UPDATE ${table} 
@@ -827,15 +926,13 @@ class DatabaseService {
   }
 
   // Get all entities that need syncing
-  public getEntitiesToSync(): { notes: Note[]; blocks: Block[]; folders: Folder[] } {
+  public getEntitiesToSync(): { notes: Note[]; blocks: Block[] } {
     const notesStmt = this.db.prepare("SELECT * FROM notes WHERE sync_status = 'pending'");
     const blocksStmt = this.db.prepare("SELECT * FROM blocks WHERE sync_status = 'pending'");
-    const foldersStmt = this.db.prepare("SELECT * FROM folders WHERE sync_status = 'pending'");
     
     return {
       notes: notesStmt.all() as Note[],
-      blocks: blocksStmt.all() as Block[],
-      folders: foldersStmt.all() as Folder[]
+      blocks: blocksStmt.all() as Block[]
     };
   }
 

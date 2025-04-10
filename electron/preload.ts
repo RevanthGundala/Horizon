@@ -11,11 +11,11 @@ contextBridge.exposeInMainWorld('electron', {
       const validChannels = [
         'toMain',
         // Database operations
-        'db:get-pages',
-        'db:get-page',
-        'db:create-page',
-        'db:update-page',
-        'db:delete-page',
+        'db:get-notes',
+        'db:get-note',
+        'db:create-note',
+        'db:update-note',
+        'db:delete-note',
         'db:get-blocks',
         'db:get-block',
         'db:create-block',
@@ -51,7 +51,7 @@ contextBridge.exposeInMainWorld('electron', {
       }
     },
     receive: (channel: string, func: (...args: any[]) => void) => {
-      const validChannels = ['fromMain'];
+      const validChannels = ['fromMain', 'auth:status-changed'];
       if (validChannels.includes(channel)) {
         // Deliberately strip event as it includes `sender` 
         ipcRenderer.on(channel, (event, ...args) => func(...args));

@@ -80,13 +80,29 @@ const Login: React.FC = () => {
               )}
             </div>
           ) : (
-            <a 
-              className="login-button"
-              href={getUrl('/api/auth/login')}
-              style={{ display: 'inline-block', textDecoration: 'none', textAlign: 'center' }}
-            >
-              Sign in with WorkOS
-            </a>
+            // Check if we're running in Electron and use the appropriate authentication method
+            window.electron ? (
+              <button 
+                className="login-button"
+                onClick={() => {
+                  console.log('Invoking Electron login');
+                  window.electron.ipcRenderer.invoke('auth:login')
+                    .then(() => console.log('Login invoked successfully'))
+                    .catch(error => console.error('Error invoking login:', error));
+                }}
+                style={{ display: 'inline-block', textDecoration: 'none', textAlign: 'center' }}
+              >
+                Sign in with WorkOS (Electron)
+              </button>
+            ) : (
+              <a 
+                className="login-button"
+                href={getUrl('/api/auth/login')}
+                style={{ display: 'inline-block', textDecoration: 'none', textAlign: 'center' }}
+              >
+                Sign in with WorkOS (Web)
+              </a>
+            )
           )}
           
           <div className="login-footer">

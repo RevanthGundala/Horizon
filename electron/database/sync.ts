@@ -1,9 +1,23 @@
-import { ipcMain, app } from 'electron';
-import DatabaseService, { Block, Note, Folder, SyncLog } from './index';
+import { ipcMain } from 'electron';
+import DatabaseService, { Block, Note, SyncLog, Workspace } from './index';
 import AuthService from '../auth';
+import crypto from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
 
 // Define the API base URL
 const API_URL = process.env.VITE_API_URL || 'https://vihy6489c7.execute-api.us-west-2.amazonaws.com/stage';
+
+// Types
+export interface NoteWithChildren extends Note {
+  children: NoteWithChildren[];
+}
+
+interface SyncResult {
+  status: 'completed' | 'up-to-date' | 'failed';
+  updated?: number;
+  deleted?: number;
+  error?: string;
+}
 
 class SyncService {
   private db: DatabaseService;
@@ -12,6 +26,24 @@ class SyncService {
   private isInitialized = false;
   private isOnline = false;
   private static instance: SyncService;
+
+  // Define the `api` property as a placeholder for API calls
+  private api = {
+    post: async (url: string, body: any) => {
+      const response = await fetch(`${API_URL}${url}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.auth.getAccessToken()}`,
+        },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        throw new Error(`API request failed: ${response.statusText}`);
+      }
+      return response.json();
+    },
+  };
 
   private constructor() {
     this.db = DatabaseService.getInstance();
@@ -95,42 +127,366 @@ class SyncService {
   }
 
   public async syncWithServer(): Promise<{ success: boolean; error?: string }> {
-    if (!this.isOnline) {
-      return { success: false, error: 'Offline' };
-    }
-    
-    // Check if user is authenticated
-    if (!this.auth.isAuthenticated()) {
-      return { success: false, error: 'Not authenticated' };
-    }
+    if (!this.isOnline) return { success: false, error: 'Offline' };
     
     try {
-      // Get access token (cookie)
-      const accessToken = this.auth.getAccessToken();
-      if (!accessToken) {
-        return { success: false, error: 'No access token available' };
+      console.log('Starting sync with server...');
+      
+      // First check if the API is available 
+      try {
+        const statusCheckResponse = await fetch(`${API_URL}/api/status`, {
+          method: 'GET'
+        });
+        
+        if (!statusCheckResponse.ok) {
+          console.log(`API status check failed: ${statusCheckResponse.status} ${statusCheckResponse.statusText}`);
+          return { success: false, error: `API unavailable: ${statusCheckResponse.status} ${statusCheckResponse.statusText}` };
+        }
+        
+        console.log('API status check successful');
+      } catch (error) {
+        console.log('API status check error:', error);
+        return { success: false, error: `API connection error: ${error instanceof Error ? error.message : String(error)}` };
       }
       
-      // Get all pending sync logs
-      const pendingSyncLogs = this.db.getPendingSyncLogs();
+      // Step 1: Check status - get mismatches (like git status)
+      const workspaceHashes = await this.getWorkspaceHashes();
+      console.log('Got workspace hashes:', Object.keys(workspaceHashes).length > 0 ? Object.keys(workspaceHashes).join(', ') : 'none');
       
-      // Process each sync log
-      for (const log of pendingSyncLogs) {
-        await this.processSyncLog(log);
+      // Get the session cookie
+      const sessionCookie = this.auth.getAccessToken();
+      if (!sessionCookie) {
+        console.log('No authentication token available for sync');
+        return { success: false, error: 'Not authenticated' };
       }
       
-      // Pull updates from server
-      await this.pullUpdatesFromServer();
+      console.log(`Sending sync status request to ${API_URL}/api/sync/status`);
+      
+      // Skip sync if we don't have any workspaces
+      if (Object.keys(workspaceHashes).length === 0) {
+        console.log('No workspaces to sync, skipping');
+        return { success: true };
+      }
+      
+      const statusResponse = await fetch(`${API_URL}/api/sync/status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': `wos-session=${sessionCookie}`,
+          'X-Authorization': `Bearer ${sessionCookie}` // Try both auth methods
+        },
+        body: JSON.stringify({ workspace_hashes: workspaceHashes })
+      });
+
+      if (!statusResponse.ok) throw new Error(`Sync status failed: ${statusResponse.statusText}`);
+      
+      const result = await statusResponse.json();
+      
+      if (result.mismatches?.length > 0) {
+        // Step 2: Handle mismatches by pulling updates (like git pull)
+        await this.handleMismatches(result.mismatches);
+      }
+      
+      // Step 3: Process sync logs to push local changes (like git push)
+      await this.pushLocalChanges();
       
       return { success: true };
-    } catch (error) {
+    } catch (error: any) {
       console.error('Sync error:', error);
       return { success: false, error: String(error) };
     }
   }
-
-  private async processSyncLog(log: SyncLog): Promise<void> {
+  
+  private async pushLocalChanges(): Promise<void> {
+    // Get pending sync logs
+    const syncLogs = this.db.getPendingSyncLogs();
+    if (syncLogs.length === 0) return;
+    
+    // Group sync logs by entity type for efficient processing
+    const changes = syncLogs.map(log => ({
+      entity_type: log.entity_type as 'workspace' | 'note' | 'block',
+      action: log.action as 'create' | 'update' | 'delete',
+      entity_id: log.entity_id,
+      data: log.payload ? JSON.parse(log.payload) : undefined,
+      client_updated_at: log.created_at
+    }));
+    
     try {
+      // Get the session cookie
+      const sessionCookie = this.auth.getAccessToken();
+      if (!sessionCookie) {
+        throw new Error('No authentication token available');
+      }
+      
+      const response = await fetch(`${API_URL}/api/sync/push`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': `wos-session=${sessionCookie}`
+        },
+        body: JSON.stringify({ changes, sync_token: uuidv4() })
+      });
+      
+      if (!response.ok) throw new Error(`Push failed: ${response.statusText}`);
+      
+      const result = await response.json();
+      
+      // Mark sync logs as processed
+      for (const log of syncLogs) {
+        this.db.updateSyncLogStatus(log.id, 'success');
+      }
+      
+      // Handle any conflicts returned by server
+      if (result.conflicts && result.conflicts.length > 0) {
+        // This would be where you'd implement conflict resolution
+        console.log('Conflicts detected:', result.conflicts);
+      }
+    } catch (error) {
+      console.error('Error pushing changes:', error);
+    }
+  }
+
+  private async getWorkspaceHashes(): Promise<Record<string, string>> {
+    const workspaces = this.db.getDb().prepare('SELECT id FROM workspaces').all();
+    const hashes: Record<string, string> = {};
+    
+    for (const ws of workspaces) {
+      hashes[(ws as unknown as { id: string }).id] = await this.computeWorkspaceHash((ws as unknown as { id: string }).id);
+    }
+    
+    return hashes;
+  }
+
+  public computeWorkspaceHash(workspaceId: string): string {
+    // 1. Get workspace metadata
+    const workspace = this.db.getWorkspace(workspaceId);
+    if (!workspace) return '';
+    
+    // 2. Get all notes in workspace (including hierarchy)
+    const notes = this.db.getNotes(workspaceId);
+    
+    // 3. Build note tree with hierarchy
+    const noteTree = this.buildNoteTree(notes);
+    
+    // 4. Compute note hashes recursively
+    const computeNoteHash = (note: NoteWithChildren): string => {
+      // Get all blocks for this note
+      const blocks = this.db.getBlocks(note.id);
+      
+      // Compute block hashes
+      const blockHashes = blocks
+        .map(block => {
+          const blockData = `${block.id}|${block.type}|${block.content}|${block.updated_at}`;
+          return crypto.createHash('sha256').update(blockData).digest('hex');
+        })
+        .join('');
+      
+      // Compute child note hashes
+      const childHashes = note.children
+        .map(computeNoteHash)
+        .join('');
+      
+      // Combine with note data and hash
+      const noteData = `${note.id}|${note.title}|${note.updated_at}|${blockHashes}|${childHashes}`;
+      return crypto.createHash('sha256').update(noteData).digest('hex');
+    };
+    
+    // 5. Compute workspace hash
+    const noteHashes = noteTree.map(computeNoteHash).join('');
+    const workspaceData = `${workspace.id}|${workspace.name}|${workspace.updated_at}|${noteHashes}`;
+    
+    return crypto.createHash('sha256').update(workspaceData).digest('hex');
+  }
+
+  private buildNoteTree(notes: Note[]): NoteWithChildren[] {
+    const noteMap = new Map<string, NoteWithChildren>();
+    
+    // Create map of all notes
+    notes.forEach(note => {
+      noteMap.set(note.id, { ...note, children: [] });
+    });
+    
+    // Build hierarchy
+    const roots: NoteWithChildren[] = [];
+    noteMap.forEach(note => {
+      if (note.parent_id && noteMap.has(note.parent_id)) {
+        noteMap.get(note.parent_id)!.children.push(note);
+      } else {
+        roots.push(note);
+      }
+    });
+    
+    return roots;
+  }
+
+  private async handleMismatches(mismatches: Array<{
+    workspace_id: string;
+    required_entities: Array<'note' | 'block' | 'workspace'>;
+  }>): Promise<void> {
+    for (const mismatch of mismatches) {
+      // Use the new pull endpoint to get all data at once
+      await this.pullWorkspaceData(mismatch.workspace_id);
+    }
+  }
+  
+  private async pullWorkspaceData(workspaceId: string): Promise<void> {
+    try {
+      console.log(`Pulling data for workspace ${workspaceId}`);
+      // Get the session cookie
+      const sessionCookie = this.auth.getAccessToken();
+      if (!sessionCookie) {
+        throw new Error('No authentication token available');
+      }
+      
+      const response = await fetch(`${API_URL}/api/sync/pull`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': `wos-session=${sessionCookie}`
+        },
+        body: JSON.stringify({ workspace_id: workspaceId, include_blocks: true })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to pull workspace data: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      // Extract the data
+      const { workspace, notes, blocks, hash } = data;
+      
+      // Begin transaction
+      this.db.getDb().exec('BEGIN TRANSACTION');
+      
+      try {
+        // Process workspace
+        if (workspace) {
+          const localWorkspace = this.db.getWorkspace(workspace.id);
+          if (!localWorkspace) {
+            // New workspace from server
+            this.db.createWorkspaceFromServer(workspace, false); // Skip sync log creation
+          } else if (localWorkspace.sync_status !== 'pending') {
+            // Update existing workspace if not pending sync
+            this.db.updateWorkspaceFromServer(workspace.id, workspace, false); // Skip sync log creation
+          }
+        }
+        
+        // Process notes
+        const localNotes = this.db.getNotes(workspaceId);
+        const localNoteMap = new Map(localNotes.map(note => [note.id, note]));
+        const serverNoteIds = new Set();
+        
+        for (const note of notes) {
+          serverNoteIds.add(note.id);
+          const localNote = localNoteMap.get(note.id);
+          
+          if (!localNote) {
+            // New note from server
+            this.db.createNoteFromServer(note, false); // Skip sync log creation
+          } else if (localNote.sync_status !== 'pending') {
+            // Update existing note if not pending sync
+            const serverTimestamp = new Date(note.updated_at).getTime();
+            const localTimestamp = new Date(localNote.updated_at).getTime();
+            
+            if (serverTimestamp > localTimestamp) {
+              this.db.updateNoteFromServer(note.id, note, false); // Skip sync log creation
+            }
+          }
+        }
+        
+        // Delete notes that exist locally but not on server
+        for (const [id, note] of localNoteMap.entries()) {
+          if (!serverNoteIds.has(id) && note.sync_status !== 'pending') {
+            this.db.deleteNoteFromServer(id, false); // Skip sync log creation
+          }
+        }
+        
+        // Process blocks
+        const localBlocks = this.db.getBlocksForWorkspace(workspaceId);
+        const localBlockMap = new Map(localBlocks.map(block => [block.id, block]));
+        const serverBlockIds = new Set();
+        
+        for (const block of blocks) {
+          serverBlockIds.add(block.id);
+          const localBlock = localBlockMap.get(block.id);
+          
+          if (!localBlock) {
+            // New block from server
+            this.db.createBlockFromServer(block, false); // Skip sync log creation
+          } else if (localBlock.sync_status !== 'pending') {
+            // Update existing block if not pending sync
+            const serverTimestamp = new Date(block.updated_at).getTime();
+            const localTimestamp = new Date(localBlock.updated_at).getTime();
+            
+            if (serverTimestamp > localTimestamp) {
+              this.db.updateBlockFromServer(block.id, block, false); // Skip sync log creation
+            }
+          }
+        }
+        
+        // Delete blocks that exist locally but not on server
+        for (const [id, block] of localBlockMap.entries()) {
+          if (!serverBlockIds.has(id) && block.sync_status !== 'pending') {
+            this.db.deleteBlockFromServer(id, false); // Skip sync log creation
+          }
+        }
+        
+        // Commit transaction
+        this.db.getDb().exec('COMMIT');
+        console.log(`Successfully pulled and processed workspace ${workspaceId}`);
+        
+      } catch (error) {
+        // Rollback on error
+        this.db.getDb().exec('ROLLBACK');
+        console.error('Error processing pulled data:', error);
+        throw error;
+      }
+    } catch (error) {
+      console.error(`Error pulling workspace ${workspaceId}:`, error);
+      throw error;
+    }
+  }
+
+  public async syncNotes(workspaceId: string): Promise<void> {
+    try {
+      // First sync notes
+      await this.pullUpdatesFromServer();
+    } catch (error) {
+      console.error('Error syncing notes:', error);
+      throw error;
+    }
+  }
+
+  public async syncBlocks(workspaceId: string): Promise<void> {
+    try {
+      // Then sync blocks
+      const localPages = this.db.getNotes();
+      for (const note of localPages) {
+        await this.pullBlocksForPage(note.id);
+      }
+    } catch (error) {
+      console.error('Error syncing blocks:', error);
+      throw error;
+    }
+  }
+
+  public async syncWorkspaces(workspaceId: string): Promise<void> {
+    try {
+      // Sync workspaces
+      await this.pullWorkspacesFromServer();
+    } catch (error) {
+      console.error('Error syncing workspaces:', error);
+      throw error;
+    }
+  }
+
+  public async processSyncLog(log: SyncLog): Promise<void> {
+    try {
+      console.log(`Processing sync log for ${log.entity_type} ${log.entity_id}`);
+      
+      const entity = JSON.parse(log.payload);
+      
       // Check authentication first
       if (!this.auth.isAuthenticated()) {
         console.log('Not authenticated, skipping sync log processing');
@@ -144,48 +500,26 @@ class SyncService {
         return;
       }
       
-      let endpoint = '';
-      let method = 'POST';
-      const payload = JSON.parse(log.payload);
+      // Create a change object for the push API
+      const change = {
+        entity_type: log.entity_type as 'workspace' | 'note' | 'block',
+        action: log.action as 'create' | 'update' | 'delete',
+        entity_id: log.entity_id,
+        data: entity,
+        client_updated_at: entity.updated_at
+      };
       
-      // Determine endpoint and method based on entity type and action
-      if (log.entity_type === 'note') {
-        endpoint = '/api/notes';
-        if (log.action === 'update') {
-          endpoint += `/${log.entity_id}`;
-          method = 'PUT';
-        } else if (log.action === 'delete') {
-          endpoint += `/${log.entity_id}`;
-          method = 'DELETE';
-        }
-      } else if (log.entity_type === 'block') {
-        endpoint = '/api/blocks';
-        if (log.action === 'update') {
-          endpoint += `/${log.entity_id}`;
-          method = 'PUT';
-        } else if (log.action === 'delete') {
-          endpoint += `/${log.entity_id}`;
-          method = 'DELETE';
-        }
-      } else if (log.entity_type === 'folder') {
-        endpoint = '/api/folders';
-        if (log.action === 'update') {
-          endpoint += `/${log.entity_id}`;
-          method = 'PUT';
-        } else if (log.action === 'delete') {
-          endpoint += `/${log.entity_id}`;
-          method = 'DELETE';
-        }
-      }
-      
-      // Send request to API
-      const response = await fetch(`${API_URL}${endpoint}`, {
-        method,
+      // Send to the push endpoint instead of individual entity endpoints
+      const response = await fetch(`${API_URL}/api/sync/push`, {
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Cookie': accessToken
+          'Authorization': `Bearer ${accessToken}`
         },
-        body: method !== 'DELETE' ? JSON.stringify(payload) : undefined
+        body: JSON.stringify({ 
+          changes: [change],
+          sync_token: crypto.randomUUID()
+        })
       });
       
       if (!response.ok) {
@@ -207,9 +541,9 @@ class SyncService {
       if (response.status !== 204) { // No content
         const data = await response.json();
         const updatedAt = data.updatedAt || new Date().toISOString();
-        this.db.markEntityAsSynced(log.entity_type, log.entity_id, updatedAt);
+        this.db.markEntityAsSynced(log.entity_type as 'workspace' | 'note' | 'block', log.entity_id, updatedAt);
       } else {
-        this.db.markEntityAsSynced(log.entity_type, log.entity_id, new Date().toISOString());
+        this.db.markEntityAsSynced(log.entity_type as 'workspace' | 'note' | 'block', log.entity_id, new Date().toISOString());
       }
     } catch (error) {
       console.error(`Error processing sync log ${log.id}:`, error);
@@ -234,8 +568,8 @@ class SyncService {
         return;
       }
       
-      // Fetch pages from server
-      const pagesResponse = await fetch(`${API_URL}/api/pages`, {
+      // Fetch notes from server
+      const notesResponse = await fetch(`${API_URL}/api/notes`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -243,49 +577,49 @@ class SyncService {
         }
       });
       
-      if (!pagesResponse.ok) {
+      if (!notesResponse.ok) {
         // Handle authentication errors specifically
-        if (pagesResponse.status === 401 || pagesResponse.status === 302) {
+        if (notesResponse.status === 401 || notesResponse.status === 302) {
           console.log('Authentication error during sync, user needs to log in');
           return;
         }
         
-        const errorText = await pagesResponse.text();
-        console.error(`API Error (${pagesResponse.status}): ${errorText}`);
-        throw new Error(`Failed to fetch pages: ${pagesResponse.status} ${pagesResponse.statusText}`);
+        const errorText = await notesResponse.text();
+        console.error(`API Error (${notesResponse.status}): ${errorText}`);
+        throw new Error(`Failed to fetch notes: ${notesResponse.status} ${notesResponse.statusText}`);
       }
       
       // Check if the response is valid JSON
-      let pagesData;
+      let notesData;
       try {
-        pagesData = await pagesResponse.json();
+        notesData = await notesResponse.json();
       } catch (error) {
         console.error('Failed to parse API response:', error);
         throw new Error('Invalid API response format');
       }
       
       // Validate the response structure
-      if (!pagesData || !Array.isArray(pagesData.pages)) {
-        console.error('Unexpected API response structure:', pagesData);
+      if (!notesData || !Array.isArray(notesData.notes)) {
+        console.error('Unexpected API response structure:', notesData);
         throw new Error('Unexpected API response structure');
       }
       
-      const serverPages = pagesData.pages as Note[];
+      const serverPages = notesData.notes as Note[];
       
-      // Get all local pages
+      // Get all local notes
       const localPages = this.db.getNotes();
       const localPagesMap = new Map<string, Note>();
       
-      localPages.forEach(page => {
-        localPagesMap.set(page.id, page);
+      localPages.forEach(note => {
+        localPagesMap.set(note.id, note);
       });
       
-      // Process server pages
+      // Process server notes
       for (const serverPage of serverPages) {
         const localPage = localPagesMap.get(serverPage.id);
         
         if (!localPage) {
-          // New page from server, create locally
+          // New note from server, create locally
           const newPage = {
             ...serverPage,
             sync_status: 'synced' as const,
@@ -294,13 +628,13 @@ class SyncService {
           
           // Use direct SQL to bypass sync log creation
           const stmt = this.db.getDb().prepare(`
-            INSERT INTO pages (id, title, parent_id, user_id, is_favorite, type, created_at, updated_at, sync_status, server_updated_at)
+            INSERT INTO notes (id, title, parent_id, user_id, is_favorite, type, created_at, updated_at, sync_status, server_updated_at)
             VALUES (@id, @title, @parent_id, @user_id, @is_favorite, @type, @created_at, @updated_at, @sync_status, @server_updated_at)
           `);
           
           stmt.run(newPage);
           
-          // Pull blocks for this page
+          // Pull blocks for this note
           await this.pullBlocksForPage(serverPage.id);
         } else if (localPage.sync_status !== 'pending') {
           // Page exists locally and is not pending sync
@@ -318,7 +652,7 @@ class SyncService {
             
             // Use direct SQL to bypass sync log creation
             const stmt = this.db.getDb().prepare(`
-              UPDATE pages 
+              UPDATE notes 
               SET title = @title, 
                   parent_id = @parent_id, 
                   is_favorite = @is_favorite, 
@@ -331,7 +665,7 @@ class SyncService {
             
             stmt.run(updatedPage);
             
-            // Pull blocks for this page
+            // Pull blocks for this note
             await this.pullBlocksForPage(serverPage.id);
           }
         }
@@ -340,10 +674,10 @@ class SyncService {
         localPagesMap.delete(serverPage.id);
       }
       
-      // Any remaining pages in the map don't exist on the server
+      // Any remaining notes in the map don't exist on the server
       // If they're not pending sync, they were deleted on the server
-      for (const [id, page] of localPagesMap.entries()) {
-        if (page.sync_status !== 'pending') {
+      for (const [id, note] of localPagesMap.entries()) {
+        if (note.sync_status !== 'pending') {
           this.db.deleteNote(id);
         }
       }
@@ -352,7 +686,7 @@ class SyncService {
     }
   }
 
-  private async pullBlocksForPage(pageId: string): Promise<void> {
+  private async pullBlocksForPage(noteId: string): Promise<void> {
     try {
       // Check authentication first
       if (!this.auth.isAuthenticated()) {
@@ -367,8 +701,8 @@ class SyncService {
         return;
       }
       
-      // Fetch blocks for this page from the server
-      const blocksResponse = await fetch(`${API_URL}/api/pages/${pageId}/blocks`, {
+      // Fetch blocks for this note from the server
+      const blocksResponse = await fetch(`${API_URL}/api/notes/${noteId}/blocks`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -405,8 +739,8 @@ class SyncService {
       
       const serverBlocks = blocksData.blocks as Block[];
       
-      // Get local blocks for this page
-      const localBlocks = this.db.getBlocks(pageId);
+      // Get local blocks for this note
+      const localBlocks = this.db.getBlocks(noteId);
       const localBlocksMap = new Map<string, Block>();
       
       localBlocks.forEach(block => {
@@ -427,8 +761,8 @@ class SyncService {
           
           // Use direct SQL to bypass sync log creation
           const stmt = this.db.getDb().prepare(`
-            INSERT INTO blocks (id, page_id, user_id, type, content, metadata, order_index, created_at, updated_at, sync_status, server_updated_at)
-            VALUES (@id, @page_id, @user_id, @type, @content, @metadata, @order_index, @created_at, @updated_at, @sync_status, @server_updated_at)
+            INSERT INTO blocks (id, note_id, user_id, type, content, metadata, order_index, created_at, updated_at, sync_status, server_updated_at)
+            VALUES (@id, @note_id, @user_id, @type, @content, @metadata, @order_index, @created_at, @updated_at, @sync_status, @server_updated_at)
           `);
           
           stmt.run(newBlock);
@@ -475,92 +809,218 @@ class SyncService {
         }
       }
     } catch (error) {
-      console.error(`Error pulling blocks for page ${pageId}:`, error);
+      console.error(`Error pulling blocks for note ${noteId}:`, error);
     }
   }
 
-  public async syncFolders(): Promise<void> {
+  private async pullWorkspacesFromServer(): Promise<void> {
     try {
-      // Get server folders
-      const response = await fetch(`${API_URL}/api/folders`, {
+      // Check authentication first
+      if (!this.auth.isAuthenticated()) {
+        console.log('Not authenticated, skipping workspace sync');
+        return;
+      }
+      
+      // Get access token
+      const accessToken = this.auth.getAccessToken();
+      if (!accessToken) {
+        console.log('No access token available, skipping workspace sync');
+        return;
+      }
+      
+      // Fetch workspaces from server
+      const workspacesResponse = await fetch(`${API_URL}/api/workspaces`, {
+        method: 'GET',
         headers: {
-          'Authorization': `Bearer ${this.auth.getAccessToken()}`
+          'Content-Type': 'application/json',
+          'Cookie': accessToken
         }
       });
       
-      if (!response.ok) {
-        throw new Error(`Failed to fetch folders: ${response.statusText}`);
+      if (!workspacesResponse.ok) {
+        // Handle authentication errors specifically
+        if (workspacesResponse.status === 401 || workspacesResponse.status === 302) {
+          console.log('Authentication error during workspace sync, user needs to log in');
+          return;
+        }
+        
+        const errorText = await workspacesResponse.text();
+        console.error(`API Error (${workspacesResponse.status}): ${errorText}`);
+        throw new Error(`Failed to fetch workspaces: ${workspacesResponse.status} ${workspacesResponse.statusText}`);
       }
       
-      const foldersData = await response.json();
+      // Check if the response is valid JSON
+      let workspacesData;
+      try {
+        workspacesData = await workspacesResponse.json();
+      } catch (error) {
+        console.error('Failed to parse API response:', error);
+        throw new Error('Invalid API response format');
+      }
       
-      if (!foldersData || !foldersData.folders) {
+      // Validate the response structure
+      if (!workspacesData || !Array.isArray(workspacesData.workspaces)) {
+        console.error('Unexpected API response structure:', workspacesData);
         throw new Error('Unexpected API response structure');
       }
       
-      const serverFolders = foldersData.folders as Folder[];
+      const serverWorkspaces = workspacesData.workspaces;
       
-      // Get all local folders
-      const localFolders = this.db.getFolders();
-      const localFoldersMap = new Map<string, Folder>();
+      // Get local workspaces
+      const localWorkspaces = this.db.getWorkspaces();
+      const localWorkspacesMap = new Map<string, any>();
       
-      localFolders.forEach(folder => {
-        localFoldersMap.set(folder.id, folder);
+      localWorkspaces.forEach(workspace => {
+        localWorkspacesMap.set(workspace.id, workspace);
       });
       
-      // Process server folders
-      for (const serverFolder of serverFolders) {
-        const localFolder = localFoldersMap.get(serverFolder.id);
+      // Process server workspaces
+      for (const serverWorkspace of serverWorkspaces) {
+        const localWorkspace = localWorkspacesMap.get(serverWorkspace.id);
         
-        if (localFolder) {
-          // Update local folder with server data
-          if (new Date(serverFolder.updated_at) > new Date(localFolder.updated_at)) {
-            this.db.updateFolder(serverFolder.id, {
-              name: serverFolder.name,
-              is_favorite: serverFolder.is_favorite
-            });
-          }
+        if (!localWorkspace) {
+          // New workspace from server, create locally
+          const newWorkspace = {
+            ...serverWorkspace,
+            sync_status: 'synced' as const,
+            server_updated_at: serverWorkspace.updated_at
+          };
           
-          localFoldersMap.delete(serverFolder.id);
-        } else {
-          // Create new folder from server
-          this.db.createFolder(serverFolder);
+          // Use direct SQL to bypass sync log creation
+          const stmt = this.db.getDb().prepare(`
+            INSERT INTO workspaces (id, title, user_id, created_at, updated_at, sync_status, server_updated_at)
+            VALUES (@id, @title, @user_id, @created_at, @updated_at, @sync_status, @server_updated_at)
+          `);
+          
+          stmt.run(newWorkspace);
+        } else if (localWorkspace.sync_status !== 'pending') {
+          // Workspace exists locally and is not pending sync
+          // Check if server version is newer
+          const serverUpdatedAt = new Date(serverWorkspace.updated_at).getTime();
+          const localUpdatedAt = new Date(localWorkspace.updated_at).getTime();
+          
+          if (serverUpdatedAt > localUpdatedAt) {
+            // Server version is newer, update local
+            const updatedWorkspace = {
+              ...serverWorkspace,
+              sync_status: 'synced' as const,
+              server_updated_at: serverWorkspace.updated_at
+            };
+            
+            // Use direct SQL to bypass sync log creation
+            const stmt = this.db.getDb().prepare(`
+              UPDATE workspaces 
+              SET title = @title, 
+                  updated_at = @updated_at,
+                  sync_status = @sync_status,
+                  server_updated_at = @server_updated_at
+              WHERE id = @id
+            `);
+            
+            stmt.run(updatedWorkspace);
+          }
         }
+        
+        // Remove from map to track what's been processed
+        localWorkspacesMap.delete(serverWorkspace.id);
       }
       
-      // Delete local folders that don't exist on server
-      for (const [id, folder] of localFoldersMap.entries()) {
-        if (folder.sync_status !== 'pending') {
-          this.db.deleteFolder(id);
+      // Any remaining workspaces in the map don't exist on the server
+      // If they're not pending sync, they were deleted on the server
+      for (const [id, workspace] of localWorkspacesMap.entries()) {
+        if (workspace.sync_status !== 'pending') {
+          this.db.deleteWorkspace(id);
         }
       }
     } catch (error) {
-      console.error('Error syncing folders:', error);
-      throw error;
+      console.error('Error pulling workspaces from server:', error);
     }
   }
 
-  public async syncNotes(): Promise<void> {
+  public async syncWorkspace(workspaceId: string): Promise<SyncResult> {
     try {
-      // First sync notes
-      await this.pullUpdatesFromServer();
-    } catch (error) {
-      console.error('Error syncing notes:', error);
-      throw error;
-    }
-  }
+      // 1. Compute local hash
+      const localHash = this.computeWorkspaceHash(workspaceId);
+      
+      // 2. Get server comparison
+      const { data } = await this.api.post('/api/sync/workspace', { 
+        workspaceId,
+        clientHash: localHash
+      });
 
-  public async syncBlocks(): Promise<void> {
-    try {
-      // Then sync blocks
-      const localPages = this.db.getNotes();
-      for (const page of localPages) {
-        await this.pullBlocksForPage(page.id);
+      // 3. Process changes if needed
+      if (data.requiresSync) {
+        await this.applySyncChanges(
+          workspaceId,
+          data.entitiesToUpdate,
+          data.entitiesToDelete
+        );
+        
+        // Update local sync status
+        await this.markEntitiesAsSynced(workspaceId);
+        
+        return {
+          status: 'completed',
+          updated: data.entitiesToUpdate?.length || 0,
+          deleted: data.entitiesToDelete?.length || 0
+        };
       }
-    } catch (error) {
-      console.error('Error syncing blocks:', error);
-      throw error;
+      
+      return { status: 'up-to-date' };
+    } catch (error: any) {
+      console.error('Sync failed:', error);
+      return { 
+        status: 'failed',
+        error: error.message || 'Unknown error',
+      };
     }
+  }
+
+  // Implement the `applySyncChanges` method
+  private async applySyncChanges(workspaceId: string, entitiesToUpdate: any[], entitiesToDelete: any[]): Promise<void> {
+    console.log(`Applying sync changes for workspace ${workspaceId}`);
+
+    // Update entities in the local database
+    for (const entity of entitiesToUpdate) {
+      if (entity.type === 'note') {
+        this.db.updateNote(entity.data.id, entity.data);
+      } else if (entity.type === 'block') {
+        this.db.updateBlock(entity.data.id, entity.data);
+      }
+    }
+
+    // Delete entities from the local database
+    for (const entity of entitiesToDelete) {
+      if (entity.type === 'note') {
+        this.db.deleteNote(entity.id);
+      } else if (entity.type === 'block') {
+        this.db.deleteBlock(entity.id);
+      }
+    }
+  }
+
+  // Implement the `markEntitiesAsSynced` method
+  private async markEntitiesAsSynced(workspaceId: string): Promise<void> {
+    console.log(`Marking entities as synced for workspace ${workspaceId}`);
+
+    // Mark all entities in the workspace as synced
+    const notes = this.db.getNotes(workspaceId);
+    for (const note of notes) {
+      this.db.markNoteAsSynced(note.id, note.updated_at);
+    }
+
+    const blocks = this.db.getBlocks(workspaceId);
+    for (const block of blocks) {
+      this.db.markBlockAsSynced(block.id, block.updated_at);
+    }
+  }
+
+  private async updateWorkspaceHash(workspaceId: string): Promise<void> {
+    const hash = this.computeWorkspaceHash(workspaceId);
+    await this.api.post('/api/sync/update-hash', {
+      workspaceId,
+      hash
+    });
   }
 
   public shutdown(): void {

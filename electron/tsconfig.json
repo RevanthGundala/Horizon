@@ -3,12 +3,18 @@
     "target": "ES2020",
     "module": "CommonJS",
     "outDir": "../dist/electron",
-    "rootDir": ".",
+    "rootDir": "..",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["../src/*"],
+      "@shared/*": ["../shared/*"]
+    },
   },
-  "include": ["./**/*.ts"]
+  "include": ["./**/*.ts"],
+  "files": ["./main.ts", "./preload.ts"]
 }

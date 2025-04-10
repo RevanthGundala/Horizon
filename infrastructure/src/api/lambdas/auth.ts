@@ -21,10 +21,13 @@ const loginHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProx
     const authorizationUrl = workos.userManagement.getAuthorizationUrl({
       // Specify that we'd like AuthKit to handle the authentication flow
       provider: 'authkit',
-      // The callback endpoint that WorkOS will redirect to after a user authenticates
-      redirectUri: `${process.env.API_URL}/api/auth/callback`,
+      // Use the exact redirect URI that's registered with WorkOS
+      // This must match what's in your WorkOS dashboard exactly
+      redirectUri: "horizon://api/auth/callback",
       clientId,
     });
+    
+    console.log('Using redirectUri:', "horizon://api/auth/callback");
     
     console.log('Authorization URL:', authorizationUrl);
 
@@ -74,6 +77,8 @@ const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayP
     const workos = new WorkOS(process.env.WORKOS_API_KEY || "", {
       clientId,
     }); 
+    console.log('Authenticating with code:', code);
+    
     const { user, sealedSession } = await workos.userManagement.authenticateWithCode({
       code,
       clientId,
@@ -82,6 +87,8 @@ const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayP
         cookiePassword: process.env.WORKOS_COOKIE_PASSWORD || "",
       }
     });
+    
+    console.log('Authentication successful with redirect URI: horizon://api/auth/callback');
 
     console.log("WorkOS user:", user);
 
@@ -121,11 +128,53 @@ const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayP
     const apiUrl = process.env.API_URL || "";
     const domain = apiUrl ? apiUrl.split('://').pop()?.split('/')[0] : "";
     
-    // Redirect the user to the homepage
+    // Always redirect to the custom protocol if it's from Electron
+    // Our custom protocol is registered with WorkOS as: horizon://api/auth/callback
+    const isFromElectron = origin && (origin.startsWith('electron://') || origin.includes('localhost:5173'));
+    if (!sealedSession) {
+      throw new Error('No sealed session available');
+    }
+    
+    // Include session in the redirect URL for Electron app
+    const redirectUrl = isFromElectron 
+      ? `horizon://api/auth/callback?code=${code}&session=${encodeURIComponent(sealedSession)}`
+      : frontendUrl;
+    
+    console.log(`Redirecting to ${redirectUrl} (isFromElectron: ${isFromElectron})`);
+    console.log(`Using registered redirect URI: horizon://api/auth/callback`);
+    
+    // If this is an Electron request, return the session data in the response body
+    // This helps with issues where the Set-Cookie header might not be properly processed by Electron's fetch API
+    const isElectronRequest = event.headers['X-Electron-App'] === 'true' || 
+                             event.headers['x-electron-app'] === 'true';
+                             
+    console.log('Is Electron request:', isElectronRequest, 'Headers:', event.headers);
+    
+    if (isElectronRequest) {
+      console.log('Sending session data in response body for Electron app');
+      return {
+        statusCode: 200,
+        headers: {
+          "Set-Cookie": `wos-session=${sealedSession}; HttpOnly; Path=/; SameSite=None; Secure${domain ? `; Domain=${domain}` : ''}`,
+          "Access-Control-Allow-Origin": origin || '*',
+          "Access-Control-Allow-Credentials": "true",
+          "Access-Control-Expose-Headers": "Set-Cookie",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          success: true,
+          userId: user.id,
+          email: user.email,
+          sealedSession: sealedSession
+        }),
+      };
+    }
+    
+    // For web browser, redirect as normal with cookie
     return {
       statusCode: 302,
       headers: {
-        "Location": frontendUrl,
+        "Location": redirectUrl,
         "Set-Cookie": `wos-session=${sealedSession}; HttpOnly; Path=/; SameSite=None; Secure${domain ? `; Domain=${domain}` : ''}`,
         "Access-Control-Allow-Origin": origin || frontendUrl,
         "Access-Control-Allow-Credentials": "true",

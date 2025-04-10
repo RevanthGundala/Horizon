@@ -57,17 +57,88 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setOfflineUserId(storedUserId);
     }
     
+    // Listen for authentication status changes from Electron main process
+    if (window.electron) {
+      console.log('Setting up auth status change listener');
+      // First check if we're already authenticated with the Electron process
+      window.electron.ipcRenderer.invoke('auth:is-authenticated')
+        .then((isAuthenticated: boolean) => {
+          console.log('Initial auth check with electron:', isAuthenticated);
+          if (isAuthenticated) {
+            return window.electron.ipcRenderer.invoke('auth:get-user-id');
+          }
+          return null;
+        })
+        .then((userId: string | null) => {
+          if (userId) {
+            console.log('Got user ID from electron:', userId);
+            // Store the user ID for offline access
+            localStorage.setItem('horizon-user-id', userId);
+            // Refetch auth status
+            queryClient.invalidateQueries({ queryKey: ['auth'] });
+            // Navigate to home page if not already there
+            navigate({ to: '/' });
+          }
+        })
+        .catch(err => {
+          console.error('Error checking auth status with electron:', err);
+        });
+      
+      // Set up listener for future auth status changes
+      window.electron.ipcRenderer.receive('auth:status-changed', (isAuthenticated: boolean) => {
+        console.log('Received auth status change:', isAuthenticated);
+        if (isAuthenticated) {
+          // Get the user ID from electron
+          window.electron.ipcRenderer.invoke('auth:get-user-id')
+            .then((userId: string | null) => {
+              if (userId) {
+                console.log('Got user ID from electron after status change:', userId);
+                // Store the user ID for offline access
+                localStorage.setItem('horizon-user-id', userId);
+              }
+              // Refetch auth status
+              queryClient.invalidateQueries({ queryKey: ['auth'] });
+              // Navigate to home page
+              navigate({ to: '/' });
+            })
+            .catch(err => {
+              console.error('Error getting user ID after auth status change:', err);
+              // Still try to refetch and navigate even if we can't get the user ID
+              queryClient.invalidateQueries({ queryKey: ['auth'] });
+              navigate({ to: '/' });
+            });
+        }
+      });
+    }
+    
     // Clean up
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, []);
+  }, [navigate, queryClient]);
   
   const { data, isLoading } = useQuery({
     queryKey: ['auth'],
     queryFn: async (): Promise<{ userId: string } | null> => {
       try {
+        // For Electron app, check authentication status first using Electron IPC
+        if (window.electron) {
+          console.log('Checking authentication with Electron IPC');
+          const isAuthenticated = await window.electron.ipcRenderer.invoke('auth:is-authenticated');
+          
+          if (isAuthenticated) {
+            console.log('Authenticated with Electron');
+            const userId = await window.electron.ipcRenderer.invoke('auth:get-user-id');
+            if (userId) {
+              console.log('Got user ID from Electron:', userId);
+              // Store for offline use
+              localStorage.setItem('horizon-user-id', userId);
+              return { userId };
+            }
+          }
+        }
+        
         // If we're offline, use the stored user ID
         if (!navigator.onLine) {
           console.log('Offline mode: using stored user ID');
@@ -111,6 +182,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         if (!navigator.onLine && offlineUserId) {
           console.log('Offline mode: using stored user ID after error');
           return { userId: offlineUserId };
+        }
+        
+        // Last resort: check localStorage even if we're online
+        const storedUserId = localStorage.getItem('horizon-user-id');
+        if (storedUserId) {
+          console.log('Using stored user ID as last resort');
+          return { userId: storedUserId };
         }
         
         navigate({ to: '/login' });

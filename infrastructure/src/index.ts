@@ -6,8 +6,10 @@ import { statusApi } from "./api/lambdas/status";
 import { userApi } from "./api/lambdas/user";
 import { chatApi } from "./api/lambdas/chat";
 import { authApi } from "./api/lambdas/auth";
-import { pagesApi } from "./api/lambdas/notes";
-import { blocksApi } from "./api/lambdas/blocks";
+import { syncApi } from "./api/lambdas/sync";
+// No need to import searchApi as it's used as a tool, not an API endpoint
+import { Client } from "pg";
+import { SQL_SCHEMAS } from "../../shared/sql-schemas";
 
 // Get environment variables from Pulumi config
 const config = new pulumi.Config();
@@ -18,9 +20,11 @@ const workosApiKey = config.requireSecret("WORKOS_API_KEY");
 const workosClientId = config.requireSecret("WORKOS_CLIENT_ID");
 const workosPassword = config.requireSecret("WORKOS_COOKIE_PASSWORD");
 const openaiApiKey = config.requireSecret("OPENAI_API_KEY");
+
+// TODO: Move to Pulumi config
 const password = "zisbas-roCfud-9kappe";
 const connectionString = `postgresql://postgres.wduhigsetfxsisltbjhr:${password}@aws-0-us-east-1.pooler.supabase.com:6543/postgres`;
-
+const redisUrl = "redis://default:AWo3AAIjcDFmMjQ3ZWU1YjZkMTA0NTJiOTk1OWM2OGI5NmQwYzgzYnAxMA@diverse-egret-27191.upstash.io:6379";
 
 // Common environment variables for all Lambda functions
 const env = {
@@ -34,8 +38,38 @@ const env = {
     DB_URL: connectionString,
     DATABASE_URL: connectionString,
     OPENAI_API_KEY: openaiApiKey,
+    REDIS_URL: redisUrl
   }
 };
+
+// Initialize our DB
+(async function initDatabase() {
+  const client = new Client({
+    connectionString,
+    ssl: { rejectUnauthorized: false }
+  });
+  
+  try {
+    await client.connect();
+    console.log("🔷 Initializing database schema...");
+    
+    await client.query(SQL_SCHEMAS.USERS);
+    await client.query(SQL_SCHEMAS.WORKSPACES);
+    await client.query(SQL_SCHEMAS.NOTES);
+    await client.query(SQL_SCHEMAS.BLOCKS);
+    await client.query(SQL_SCHEMAS.SYNC_LOG);
+    
+    console.log("✅ Database initialized successfully");
+  } catch (err) {
+    console.error("❌ Database initialization failed:", err);
+    throw err;
+  } finally {
+    await client.end();
+  }
+})().catch(err => {
+  console.error("Fatal error during initialization:", err);
+  process.exit(1);
+});
 
 // Create an API Gateway
 const api = new awsx.classic.apigateway.API("horizon-api", {
@@ -99,88 +133,32 @@ const api = new awsx.classic.apigateway.API("horizon-api", {
         memorySize: 512, // More memory for processing chat requests
       }),
     },
-    // Pages endpoints
+    // Sync endpoints with Git-inspired naming
     {
-      path: "/api/pages",
-      method: "GET",
-      eventHandler: new aws.lambda.CallbackFunction("get-pages-handler", {
-        callback: pagesApi.getAllPages,
-        environment: env,
-      }),
-    },
-    {
-      path: "/api/pages/{id}",
-      method: "GET",
-      eventHandler: new aws.lambda.CallbackFunction("get-page-handler", {
-        callback: pagesApi.getPage,
-        environment: env,
-      }),
-    },
-    {
-      path: "/api/pages",
+      path: "/api/sync/status",
       method: "POST",
-      eventHandler: new aws.lambda.CallbackFunction("create-page-handler", {
-        callback: pagesApi.createPage,
+      eventHandler: new aws.lambda.CallbackFunction("sync-status-handler", {
+        callback: syncApi.status,
         environment: env,
       }),
     },
     {
-      path: "/api/pages/{id}",
-      method: "PUT",
-      eventHandler: new aws.lambda.CallbackFunction("update-page-handler", {
-        callback: pagesApi.updatePage,
-        environment: env,
-      }),
-    },
-    {
-      path: "/api/pages/{id}",
-      method: "DELETE",
-      eventHandler: new aws.lambda.CallbackFunction("delete-page-handler", {
-        callback: pagesApi.deletePage,
-        environment: env,
-      }),
-    },
-    // Blocks endpoints
-    {
-      path: "/api/blocks",
-      method: "GET",
-      eventHandler: new aws.lambda.CallbackFunction("get-blocks-handler", {
-        callback: blocksApi.getBlocks,
-        environment: env,
-      }),
-    },
-    {
-      path: "/api/blocks",
+      path: "/api/sync/pull",
       method: "POST",
-      eventHandler: new aws.lambda.CallbackFunction("create-block-handler", {
-        callback: blocksApi.createBlock,
+      eventHandler: new aws.lambda.CallbackFunction("sync-pull-handler", {
+        callback: syncApi.pull,
         environment: env,
       }),
     },
     {
-      path: "/api/blocks/{id}",
-      method: "PUT",
-      eventHandler: new aws.lambda.CallbackFunction("update-block-handler", {
-        callback: blocksApi.updateBlock,
+      path: "/api/sync/push",
+      method: "POST",
+      eventHandler: new aws.lambda.CallbackFunction("sync-push-handler", {
+        callback: syncApi.push,
         environment: env,
       }),
     },
-    {
-      path: "/api/blocks/{id}",
-      method: "DELETE",
-      eventHandler: new aws.lambda.CallbackFunction("delete-block-handler", {
-        callback: blocksApi.deleteBlock,
-        environment: env,
-      }),
-    },
-    {
-      path: "/api/blocks/batch",
-      method: "PUT",
-      eventHandler: new aws.lambda.CallbackFunction("update-blocks-handler", {
-        callback: blocksApi.updateBlocks,
-        environment: env,
-      }),
-    },
+    // No standalone search endpoints needed - search functionality is provided as tools in the chat endpoint
   ],
 });
 

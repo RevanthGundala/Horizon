@@ -31,7 +31,7 @@ const createWindow = () => {
     width: 1200,
     height: 800,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, './preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
     },
@@ -39,7 +39,8 @@ const createWindow = () => {
 
   // In production, set the initial browser path to the local bundled Vite output
   if (app.isPackaged) {
-    mainWindow.loadFile(path.join(__dirname, '../index.html'));
+    // Fix the path to go up two levels since we're in dist/electron/electron/
+    mainWindow.loadFile(path.join(__dirname, '../../index.html'));
   } else {
     // In development, use the Vite dev server
     mainWindow.loadURL('http://localhost:5173');
@@ -129,9 +130,36 @@ app.whenReady().then(() => {
   // Set up protocol handler for OAuth
   setupProtocolHandler();
   
+  // Handle protocol activation during app launch
+  if (process.platform === 'darwin') {
+    app.on('will-finish-launching', () => {
+      // macOS-specific: handle open-url events before the app is ready
+      app.on('open-url', (event, url) => {
+        event.preventDefault();
+        console.log('Received open-url event before app ready:', url);
+        // Store the URL for processing after app is ready
+        if (url.startsWith('horizon://')) {
+          console.log('Storing horizon:// URL for processing after app ready:', url);
+          // We'll handle it in setupProtocolHandler
+        }
+      });
+    });
+  }
+  
   // Set up logging
   const logPath = setupLogging();
   console.log('Electron app starting...');
+  
+  // Set up IPC listener for protocol detection
+  ipcMain.on('protocol-detected', (event, url) => {
+    console.log('Protocol URL detected via IPC:', url);
+    if (url.startsWith('horizon://')) {
+      // Handle the protocol URL
+      authService.handleOAuthCallback(url)
+        .then(result => console.log(`Protocol URL handling result: ${result}`))
+        .catch(err => console.error('Error handling protocol URL:', err));
+    }
+  });
 
   // Set up IPC handlers
   setupDatabaseIpcHandlers();
