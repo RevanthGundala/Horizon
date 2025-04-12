@@ -3,7 +3,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { createHeaders, handleOptions } from '../utils/middleware';
 import * as aws from "@pulumi/aws";
-import { redis } from "bun";
+import { createClient } from "redis"; 
+// Create a Redis client when needed, don't use global import
 import crypto from 'crypto';
 
 type EntityType = 'workspace' | 'note' | 'block';
@@ -369,31 +370,53 @@ const applyChanges = async (client: Client, request: SyncRequest): Promise<SyncR
 const getWorkspaceHashes = async (workspaceIds: string[]): Promise<Record<string, CachedWorkspace>> => {
   if (workspaceIds.length === 0) return {};
   
-  const results = await Promise.all(
-    workspaceIds.map(id => redis.get(`workspace:${id}`))
-  );
-  
-  return workspaceIds.reduce((acc, id, index) => {
-    if (results[index]) {
-      acc[id] = JSON.parse(results[index] as string);
-    }
-    return acc;
-  }, {} as Record<string, CachedWorkspace>);
+  try {
+    // Create Redis client
+    const redisClient = createClient({ url: process.env.REDIS_URL });
+    await redisClient.connect();
+    
+    const results = await Promise.all(
+      workspaceIds.map(id => redisClient.get(`workspace:${id}`))
+    );
+    
+    // Close Redis connection
+    await redisClient.disconnect();
+    
+    return workspaceIds.reduce((acc, id, index) => {
+      if (results[index]) {
+        acc[id] = JSON.parse(results[index] as string);
+      }
+      return acc;
+    }, {} as Record<string, CachedWorkspace>);
+  } catch (error) {
+    console.error('Error getting workspace hashes from Redis:', error);
+    return {};
+  }
 };
 
 const updateWorkspaceHash = async (workspaceId: string, hash: string): Promise<void> => {
-  const cached: CachedWorkspace = {
-    id: workspaceId,
-    hash,
-    lastSyncedAt: new Date().toISOString()
-  };
-  
-  await redis.set(
-    `workspace:${workspaceId}`,
-    JSON.stringify(cached),
-    "EX",
-    86400 // Expire after 1 day
-  );
+  try {
+    // Create Redis client
+    const redisClient = createClient({ url: process.env.REDIS_URL });
+    await redisClient.connect();
+    
+    const cached: CachedWorkspace = {
+      id: workspaceId,
+      hash,
+      lastSyncedAt: new Date().toISOString()
+    };
+    
+    await redisClient.set(
+      `workspace:${workspaceId}`,
+      JSON.stringify(cached),
+      { EX: 86400 } // Expire after 1 day
+    );
+    
+    // Close Redis connection
+    await redisClient.disconnect();
+  } catch (error) {
+    console.error('Error updating workspace hash in Redis:', error);
+  }
 };
 
 const compareWorkspaceHashes = async (clientHashes: Record<string, string>): Promise<WorkspaceHashResponse> => {
@@ -420,19 +443,45 @@ const compareWorkspaceHashes = async (clientHashes: Record<string, string>): Pro
 };
 
 const getAllNotes = async (workspaceId: string): Promise<any[]> => {
-  const res = await redis.get(`notes:${workspaceId}`);
-  if (res) {
-    return JSON.parse(res as string);
+  try {
+    // Create Redis client
+    const redisClient = createClient({ url: process.env.REDIS_URL });
+    await redisClient.connect();
+    
+    const res = await redisClient.get(`notes:${workspaceId}`);
+    
+    // Close Redis connection
+    await redisClient.disconnect();
+    
+    if (res) {
+      return JSON.parse(res as string);
+    }
+    return [];
+  } catch (error) {
+    console.error('Error getting notes from Redis:', error);
+    return [];
   }
-  return [];
 };
 
 const getBlocksForWorkspace = async (workspaceId: string): Promise<any[]> => {
-  const res = await redis.get(`blocks:${workspaceId}`);
-  if (res) {
-    return JSON.parse(res as string);
+  try {
+    // Create Redis client
+    const redisClient = createClient({ url: process.env.REDIS_URL });
+    await redisClient.connect();
+    
+    const res = await redisClient.get(`blocks:${workspaceId}`);
+    
+    // Close Redis connection
+    await redisClient.disconnect();
+    
+    if (res) {
+      return JSON.parse(res as string);
+    }
+    return [];
+  } catch (error) {
+    console.error('Error getting blocks from Redis:', error);
+    return [];
   }
-  return [];
 };
 
 async function getNotesWithHierarchy(workspaceId: string): Promise<NoteWithChildren[]> {

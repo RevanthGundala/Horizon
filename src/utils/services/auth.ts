@@ -1,13 +1,4 @@
-// Authentication service for the renderer process
-// This service communicates with the main process via IPC
-
-// Helper to check if we're running in Electron
-const isElectron = () => {
-  return window.electron !== undefined;
-};
-
-const ipcCall = <T = any>(channel: string, ...args: any[]): Promise<T> =>
-  window.electron.ipcRenderer.invoke(channel, ...args);
+import {isElectron, ipcCall} from './helpers';
 
 // Auth service interface
 export interface AuthService {

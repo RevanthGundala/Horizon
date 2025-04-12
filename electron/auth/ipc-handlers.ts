@@ -20,11 +20,15 @@ export function setupAuthIpcHandlers(): void {
 
   // Check authentication status
   ipcMain.handle('auth:is-authenticated', () => {
-    return auth.isAuthenticated();
+    const tokenDetails = auth.getTokenDetails();
+    console.log('[IPC] Authentication status check:', tokenDetails);
+    return tokenDetails.isAuthenticated;
   });
 
   // Get user ID
   ipcMain.handle('auth:get-user-id', () => {
-    return auth.getUserId();
+    const userId = auth.getUserId();
+    console.log('[IPC] Get user ID:', userId);
+    return userId;
   });
 }

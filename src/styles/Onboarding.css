@@ -1,0 +1,155 @@
+.onboarding-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  background-color: var(--color-background);
+  padding: 2rem;
+}
+
+.onboarding-card {
+  background-color: var(--color-surface);
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  max-width: 600px;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.onboarding-header {
+  padding: 2rem;
+  background-color: var(--color-primary);
+  color: white;
+  text-align: center;
+}
+
+.onboarding-header h1 {
+  margin: 0;
+  font-size: 1.8rem;
+  font-weight: 600;
+}
+
+.onboarding-header p {
+  margin: 0.5rem 0 0;
+  opacity: 0.9;
+}
+
+.onboarding-content {
+  padding: 2rem;
+}
+
+.onboarding-step h2 {
+  font-size: 1.4rem;
+  margin: 0 0 1rem;
+  color: var(--color-text);
+}
+
+.onboarding-step p {
+  margin: 0 0 1.5rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.onboarding-image {
+  display: flex;
+  justify-content: center;
+  margin: 2rem 0;
+}
+
+.image-placeholder {
+  width: 200px;
+  height: 160px;
+  background-color: var(--color-background);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+}
+
+.input-group {
+  margin-bottom: 1.5rem;
+}
+
+.input-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.onboarding-input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background-color: var(--color-input-background);
+  color: var(--color-text);
+  font-size: 1rem;
+  transition: border-color 0.2s;
+}
+
+.onboarding-input:focus {
+  border-color: var(--color-primary);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-primary-transparent);
+}
+
+.onboarding-actions {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2rem;
+}
+
+.onboarding-back-button {
+  padding: 0.75rem 1.5rem;
+  border: 1px solid var(--color-border);
+  background-color: transparent;
+  color: var(--color-text);
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.onboarding-back-button:hover {
+  background-color: var(--color-background);
+}
+
+.onboarding-next-button,
+.onboarding-complete-button {
+  padding: 0.75rem 1.5rem;
+  background-color: var(--color-primary);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.onboarding-next-button:hover,
+.onboarding-complete-button:hover {
+  background-color: var(--color-primary-dark);
+}
+
+.onboarding-next-button:disabled,
+.onboarding-complete-button:disabled,
+.onboarding-back-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.error-message {
+  color: var(--color-error);
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+}
+
+/* Dark mode adjustments */
+@media (prefers-color-scheme: dark) {
+  .image-placeholder {
+    background-color: var(--color-surface-dark);
+  }
+}

@@ -42,37 +42,22 @@ const env = {
   }
 };
 
-// Initialize our DB
-(async function initDatabase() {
-  const client = new Client({
-    connectionString,
-    ssl: { rejectUnauthorized: false }
-  });
-  
-  try {
-    await client.connect();
-    console.log("🔷 Initializing database schema...");
-    
-    await client.query(SQL_SCHEMAS.USERS);
-    await client.query(SQL_SCHEMAS.WORKSPACES);
-    await client.query(SQL_SCHEMAS.NOTES);
-    await client.query(SQL_SCHEMAS.BLOCKS);
-    await client.query(SQL_SCHEMAS.SYNC_LOG);
-    
-    console.log("✅ Database initialized successfully");
-  } catch (err) {
-    console.error("❌ Database initialization failed:", err);
-    throw err;
-  } finally {
-    await client.end();
-  }
-})().catch(err => {
-  console.error("Fatal error during initialization:", err);
-  process.exit(1);
-});
+// Note: Database initialization is now handled separately
+// Run `npm run init-db` to initialize the database
+console.log("🔷 Skipping database initialization during deployment");
+console.log("🔷 To initialize the database, run: npm run init-db");
 
-// Create an API Gateway
+// Create an API Gateway with proper configuration for streaming
 const api = new awsx.classic.apigateway.API("horizon-api", {
+  restApiArgs: {
+    // Enable binary support for streams
+    binaryMediaTypes: ["*/*"],
+  },
+  // Configure stage for streaming support
+  stageArgs: {
+    // Enable standard caching for better performance
+    cacheClusterEnabled: false, // Disabled to avoid costs
+  },
   routes: [
     // Status endpoint
     {
@@ -115,7 +100,7 @@ const api = new awsx.classic.apigateway.API("horizon-api", {
       }),
     },
     {
-      path: "/api/user",
+      path: "/api/users/me",
       method: "GET",
       eventHandler: new aws.lambda.CallbackFunction("user-profile-handler", {
         callback: userApi.user,
@@ -129,8 +114,8 @@ const api = new awsx.classic.apigateway.API("horizon-api", {
       eventHandler: new aws.lambda.CallbackFunction("chat-handler", {
         callback: chatApi.chat,
         environment: env,
-        timeout: 60, // Longer timeout for streaming responses
-        memorySize: 512, // More memory for processing chat requests
+        timeout: 120, // Increased timeout for streaming responses (2 minutes)
+        memorySize: 1024, // More memory for processing chat requests
       }),
     },
     // Sync endpoints with Git-inspired naming

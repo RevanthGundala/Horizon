@@ -25,7 +25,11 @@ contextBridge.exposeInMainWorld('electron', {
         'db:get-pending-changes-count',
         'db:get-pending-sync-count', 
         'db:sync', 
-        'db:get-user-id', 
+        'db:get-user-id',
+        'db:get-workspaces',
+        'db:create-workspace',
+        'db:update-workspace',
+        'db:delete-workspace',
         // Sync operations
         'sync:request-sync',
         'sync:get-network-status',
@@ -35,19 +39,25 @@ contextBridge.exposeInMainWorld('electron', {
         'auth:is-authenticated',
         'auth:get-user-id',
         'sync:get-auth-cookie',
+        'db:user-exists',
+        'sync:user',
+        'auth-success',
         // Chat operations
         'chat:send-message'
       ];
       if (validChannels.includes(channel)) {
         return ipcRenderer.invoke(channel, ...args);
       }
-      return Promise.reject(new Error(`Channel ${channel} is not allowed`));
+      console.error(`[Preload Invoke] Blocked channel: ${channel}`);
+      return Promise.reject(new Error(`Channel ${channel} is not allowed for invoke`));
     },
     send: (channel: string, data: any) => {
       // whitelist channels
       const validChannels = ['toMain'];
       if (validChannels.includes(channel)) {
         ipcRenderer.send(channel, data);
+      } else {
+        console.error(`[Preload Send] Blocked channel: ${channel}`);
       }
     },
     receive: (channel: string, func: (...args: any[]) => void) => {
@@ -55,6 +65,37 @@ contextBridge.exposeInMainWorld('electron', {
       if (validChannels.includes(channel)) {
         // Deliberately strip event as it includes `sender` 
         ipcRenderer.on(channel, (event, ...args) => func(...args));
+      }
+    },
+    on: (channel: string, func: (...args: any[]) => void) => {
+      const validChannels = ['fromMain', 'auth:status-changed', 'auth-success']; // ADD 'auth-success'
+      if (validChannels.includes(channel)) {
+        // Deliberately strip event as it includes `sender` (avoid exposing too much)
+        const saferListener = (event: any, ...args: any[]) => func(...args);
+        ipcRenderer.on(channel, saferListener);
+        // Return a cleanup function that removes the *specific* listener
+        return () => {
+          ipcRenderer.removeListener(channel, saferListener);
+        };
+      } else {
+        console.error(`[Preload On] Blocked channel: ${channel}`);
+        // Return a no-op cleanup function for disallowed channels
+        return () => {};
+      }
+    },
+    off: (channel: string, func: (...args: any[]) => void) => {
+      const validChannels = ['fromMain', 'auth:status-changed', 'auth-success']; // ADD 'auth-success'
+      if (validChannels.includes(channel)) {
+        // Same as removeListener but with a different name
+        ipcRenderer.removeListener(channel, (event: any, ...args: any[]) => func(...args));
+      }
+    },
+    removeListener: (channel: string, listener: (...args: any[]) => void) => {
+      const validChannels = ['fromMain', 'auth:status-changed', 'auth-success']; // ADD 'auth-success'
+      if (validChannels.includes(channel)) {
+        ipcRenderer.removeListener(channel, listener);
+      } else {
+        console.error(`[Preload RemoveListener] Blocked channel: ${channel}`);
       }
     }
   }

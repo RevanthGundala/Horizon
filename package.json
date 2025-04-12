@@ -3,10 +3,12 @@
   "version": "1.0.0",
   "main": "dist/electron/electron/main.js",
   "scripts": {
-    "dev": "bun run electron:build && concurrently -k \"bun run web:dev\" \"wait-on http://localhost:5173 && bun run electron:start\"",
+    "dev": "bun run electron:build && concurrently \"bun run web:dev\" \"wait-on http://localhost:5173 && bun run electron:start\"",
+    "dev:clean": "bun run electron:build && concurrently \"bun run web:dev\" \"wait-on http://localhost:5173 && bun run electron:start --clean\"",
     "web:dev": "vite --port 5173",
     "build": "tsc && vite build",
-    "gen-types": "npx supabase gen types typescript --project-id $PROJECT_REF --schema public > src/types/db.ts",
+    "rebuild": "bun run electron:build && electron-rebuild -f -m ./node_modules/better-sqlite3",
+    "gen-types": "npx supabase gen types typescript --project-id $PROJECT_REF --schema public > src/utils/database.types.ts",
     "electron:dev": "concurrently \"vite --port 5173\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "bun run build && tsc -p electron/tsconfig.json",
     "electron:start": "electron .",
@@ -53,6 +55,8 @@
     "pg": "^8.14.1",
     "postgres": "^3.4.5",
     "react": "^19.1.0",
+    "react-dnd": "^16.0.1",
+    "react-dnd-html5-backend": "^16.0.1",
     "react-dom": "^19.1.0",
     "uuid": "^11.1.0"
   },

@@ -1,18 +1,14 @@
 import { useQuery, useMutation, useQueryClient, UseQueryOptions } from '@tanstack/react-query';
 import { Store, useStore } from '@tanstack/react-store';
 import { useEffect, useCallback } from 'react';
-import { 
-  CreateBlockRequest,
-  UpdateBlockRequest,
-  BatchUpdateBlocksRequest
-} from '../utils/api';
-import { Block, dbBlocks, dbSync } from '../utils/db';
+import { dbBlocks } from '../utils/services/db';
 import { v4 as uuidv4 } from 'uuid';
+import { Block } from '@/utils/types';
 
 // Define the store state
 interface BlocksState {
   blocks: Record<string, Block>;
-  pageId: string | null;
+  pageId: string | null; // This represents the note_id
   pendingChanges: {
     updated: Record<string, Block>;
     created: Record<string, Omit<Block, 'id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'> & { tempId: string }>;
@@ -23,7 +19,7 @@ interface BlocksState {
   error: string | null;
 }
 
-// Define the type for a pending created block
+// Define the type for a pending created block with note_id
 type PendingCreatedBlock = Omit<Block, 'id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'> & { tempId: string };
 
 // Initial state
@@ -146,7 +142,7 @@ export const createBlockLocally = (
     // Create a new pending block
     const newBlock: PendingCreatedBlock = {
       tempId,
-      page_id: state.pageId,
+      note_id: state.pageId, // Using pageId as note_id
       user_id: '', // Will be set by the server
       type: data.type,
       content: data.content || null,
@@ -247,7 +243,7 @@ export const saveChanges = async (): Promise<void> => {
       const newBlock = await dbBlocks.createBlock({
         ...blockData,
         id: uuidv4(), // Generate a new ID for the block
-        page_id: pageId
+        note_id: pageId // Using pageId as the note_id
       });
       
       if (newBlock) {
@@ -277,7 +273,7 @@ export const saveChanges = async (): Promise<void> => {
     // Process updated blocks
     const updatedBlocks = Object.values(pendingChanges.updated);
     for (const block of updatedBlocks) {
-      const { id, page_id, user_id, created_at, updated_at, sync_status, server_updated_at, ...updates } = block;
+      const { id, note_id, user_id, created_at, updated_at, sync_status, server_updated_at, ...updates } = block;
       
       // Update the block in the database
       await dbBlocks.updateBlock(id, updates);
@@ -319,7 +315,7 @@ export const discardChanges = (): void => {
     if (pageId) {
       // Reload blocks from the database
       dbBlocks.getBlocks(pageId)
-        .then(blocks => setBlocks(blocks, pageId))
+        .then((blocks: Block[]) => setBlocks(blocks, pageId))
         .catch(console.error);
     }
     
@@ -386,7 +382,7 @@ export function useCreateBlock() {
     mutationFn: async (blockData: Omit<Block, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>) => {
       console.log('🔶 [FRONTEND HOOK] Creating block:', {
         id: blockData.id,
-        page_id: blockData.page_id,
+        note_id: blockData.note_id,
         type: blockData.type,
         contentLength: blockData.content ? blockData.content.length : 0,
         order_index: blockData.order_index
@@ -403,9 +399,9 @@ export function useCreateBlock() {
     },
     onSuccess: (newBlock: Block | null) => {
       if (newBlock) {
-        console.log('🔶 [FRONTEND HOOK] Invalidating queries for page:', newBlock.page_id);
+        console.log('🔶 [FRONTEND HOOK] Invalidating queries for note:', newBlock.note_id);
         queryClient.invalidateQueries({
-          queryKey: blocksKeys.list({ pageId: newBlock.page_id }),
+          queryKey: blocksKeys.list({ pageId: newBlock.note_id }),
         });
       }
     },
@@ -419,7 +415,7 @@ export function useUpdateBlock() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async ({ id, updates }: { id: string; updates: Partial<Omit<Block, 'id' | 'page_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>> }) => {
+    mutationFn: async ({ id, updates }: { id: string; updates: Partial<Omit<Block, 'id' | 'note_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>> }) => {
       console.log('🔶 [FRONTEND HOOK] Updating block:', {
         id,
         contentLength: updates.content ? updates.content.length : undefined,
@@ -438,9 +434,9 @@ export function useUpdateBlock() {
     },
     onSuccess: (updatedBlock: Block | null) => {
       if (updatedBlock) {
-        console.log('🔶 [FRONTEND HOOK] Invalidating queries for page:', updatedBlock.page_id);
+        console.log('🔶 [FRONTEND HOOK] Invalidating queries for note:', updatedBlock.note_id);
         queryClient.invalidateQueries({
-          queryKey: blocksKeys.list({ pageId: updatedBlock.page_id }),
+          queryKey: blocksKeys.list({ pageId: updatedBlock.note_id }),
         });
       }
     },
@@ -454,12 +450,12 @@ export function useUpdateBlockMutation() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: ({ blockId, data }: { blockId: string; data: Partial<Omit<Block, 'id' | 'page_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>> }) => 
+    mutationFn: ({ blockId, data }: { blockId: string; data: Partial<Omit<Block, 'id' | 'note_id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>> }) => 
       dbBlocks.updateBlock(blockId, data),
     onSuccess: (updatedBlock: Block | null) => {
       if (updatedBlock) {
         queryClient.invalidateQueries({
-          queryKey: blocksKeys.list({ pageId: updatedBlock.page_id }),
+          queryKey: blocksKeys.list({ pageId: updatedBlock.note_id }),
         });
       }
     },

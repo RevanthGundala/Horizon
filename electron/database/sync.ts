@@ -27,23 +27,6 @@ class SyncService {
   private isOnline = false;
   private static instance: SyncService;
 
-  // Define the `api` property as a placeholder for API calls
-  private api = {
-    post: async (url: string, body: any) => {
-      const response = await fetch(`${API_URL}${url}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.auth.getAccessToken()}`,
-        },
-        body: JSON.stringify(body),
-      });
-      if (!response.ok) {
-        throw new Error(`API request failed: ${response.statusText}`);
-      }
-      return response.json();
-    },
-  };
 
   private constructor() {
     this.db = DatabaseService.getInstance();
@@ -107,21 +90,46 @@ class SyncService {
       
       return { success: true };
     });
+
+    // Add sync:user IPC handler with proper validation and logging
+    ipcMain.handle('sync:user', async (event, userId: string) => {
+      console.log(`[IPC] Attempting to sync user: ${userId}`);
+      
+      // Basic validation
+      if (!userId) {
+        console.error('[IPC] Invalid userId for sync');
+        return false;
+      }
+
+      try {
+        const syncResult = await this.syncUser(userId);
+        console.log(`[IPC] User sync result for ${userId}:`, syncResult);
+        return syncResult;
+      } catch (error) {
+        console.error(`[IPC] Error syncing user ${userId}:`, error);
+        return false;
+      }
+    });
   }
 
   public async checkNetworkStatus(): Promise<boolean> {
     try {
-      // Try to fetch a small resource from the API
+      // Try to fetch a small resource from the API with a short timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second timeout
+      
       const response = await fetch(`${API_URL}/api/status`, {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal
       });
       
+      clearTimeout(timeoutId);
       this.isOnline = response.ok;
       return this.isOnline;
     } catch (error) {
       this.isOnline = false;
-      console.log('Network check failed, device appears to be offline');
+      console.log('Network check failed, device appears to be offline:', error instanceof Error ? error.message : String(error));
       return false;
     }
   }
@@ -132,11 +140,17 @@ class SyncService {
     try {
       console.log('Starting sync with server...');
       
-      // First check if the API is available 
+      // First check if the API is available with a short timeout
       try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second timeout
+        
         const statusCheckResponse = await fetch(`${API_URL}/api/status`, {
-          method: 'GET'
+          method: 'GET',
+          signal: controller.signal
         });
+        
+        clearTimeout(timeoutId);
         
         if (!statusCheckResponse.ok) {
           console.log(`API status check failed: ${statusCheckResponse.status} ${statusCheckResponse.statusText}`);
@@ -146,6 +160,7 @@ class SyncService {
         console.log('API status check successful');
       } catch (error) {
         console.log('API status check error:', error);
+        this.isOnline = false; // Set the app to offline mode when API is unreachable
         return { success: false, error: `API connection error: ${error instanceof Error ? error.message : String(error)}` };
       }
       
@@ -167,13 +182,12 @@ class SyncService {
         console.log('No workspaces to sync, skipping');
         return { success: true };
       }
-      
+     
       const statusResponse = await fetch(`${API_URL}/api/sync/status`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Cookie': `wos-session=${sessionCookie}`,
-          'X-Authorization': `Bearer ${sessionCookie}` // Try both auth methods
         },
         body: JSON.stringify({ workspace_hashes: workspaceHashes })
       });
@@ -247,23 +261,37 @@ class SyncService {
   }
 
   private async getWorkspaceHashes(): Promise<Record<string, string>> {
-    const workspaces = this.db.getDb().prepare('SELECT id FROM workspaces').all();
+    // Get all top-level pages from notes table
+    const stmt = this.db.getDb().prepare(`
+      SELECT id FROM notes 
+      WHERE parent_id IS NULL 
+      ORDER BY updated_at DESC
+    `);
+    const workspaces = stmt.all();
+    
+    console.log(`Found ${workspaces.length} potential workspaces for sync`);
+    
     const hashes: Record<string, string> = {};
     
     for (const ws of workspaces) {
-      hashes[(ws as unknown as { id: string }).id] = await this.computeWorkspaceHash((ws as unknown as { id: string }).id);
+      const workspaceId = (ws as unknown as { id: string }).id;
+      const hash = await this.computeWorkspaceHash(workspaceId);
+      hashes[workspaceId] = hash;
     }
     
     return hashes;
   }
 
   public computeWorkspaceHash(workspaceId: string): string {
-    // 1. Get workspace metadata
-    const workspace = this.db.getWorkspace(workspaceId);
-    if (!workspace) return '';
+    // 1. Get workspace metadata (workspace is a top-level note in our implementation)
+    const workspaceNote = this.db.getNote(workspaceId);
+    if (!workspaceNote) {
+      console.log(`No workspace found with ID: ${workspaceId}`);
+      return '';
+    }
     
     // 2. Get all notes in workspace (including hierarchy)
-    const notes = this.db.getNotes(workspaceId);
+    const notes = this.db.getNotes(undefined, workspaceId); // Get notes with this parent ID
     
     // 3. Build note tree with hierarchy
     const noteTree = this.buildNoteTree(notes);
@@ -293,7 +321,7 @@ class SyncService {
     
     // 5. Compute workspace hash
     const noteHashes = noteTree.map(computeNoteHash).join('');
-    const workspaceData = `${workspace.id}|${workspace.name}|${workspace.updated_at}|${noteHashes}`;
+    const workspaceData = `${workspaceNote.id}|${workspaceNote.title}|${workspaceNote.updated_at}|${noteHashes}`;
     
     return crypto.createHash('sha256').update(workspaceData).digest('hex');
   }
@@ -342,11 +370,11 @@ class SyncService {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Cookie': `wos-session=${sessionCookie}`
+          'Cookie': `wos-session=${sessionCookie}`,
         },
         body: JSON.stringify({ workspace_id: workspaceId, include_blocks: true })
       });
-      
+
       if (!response.ok) {
         throw new Error(`Failed to pull workspace data: ${response.statusText}`);
       }
@@ -448,6 +476,66 @@ class SyncService {
     }
   }
 
+  public async syncUser(userId: string): Promise<boolean> {
+    // userId parameter can still be useful for logging, but isn't needed for the URL path anymore
+    console.log(`[Client SyncUser] Syncing current user (ID from auth: ${userId})`);
+    try {
+      const accessToken = this.auth.getAccessToken();
+      if (!accessToken) {
+        console.error('[Client SyncUser] No access token available.');
+        return false;
+      }
+  
+      // *** CHANGE THE URL TO THE NEW ENDPOINT ***
+      // const requestUrl = `${API_URL}/api/users/${userId}`; // OLD URL
+      const requestUrl = `${API_URL}/api/users/me`; // NEW URL
+  
+      const requestHeaders = {
+          'Content-Type': 'application/json',
+          // Keep using the Cookie header as required by withAuth
+          'Cookie': `wos-session=${accessToken}`
+      };
+  
+      console.log(`[Client SyncUser] Fetching ${requestUrl} with headers:`, JSON.stringify(requestHeaders));
+  
+      const response = await fetch(requestUrl, {
+        method: 'GET',
+        headers: requestHeaders,
+      });
+  
+      console.log('[Client SyncUser] User fetch response status:', response.status);
+  
+      if (!response.ok) {
+        let errorBody = `(Could not read error body)`;
+        try {
+            errorBody = await response.text();
+        } catch (e) { /* ignore */ }
+        console.error(`[Client SyncUser] Failed to fetch current user from ${requestUrl}. Status: ${response.status}. Body: ${errorBody}`);
+        return false;
+      }
+  
+      const responseData = await response.json();
+      // Adjust based on the actual structure returned by your userApi.user handler
+      // It likely returns { user: { id: ..., email: ... } } based on your handler code
+      const userToUpsert = responseData.user || responseData;
+      console.log('[Client SyncUser] Fetched current user data:', userToUpsert);
+  
+      if (!userToUpsert || !userToUpsert.id) {
+          console.error('[Client SyncUser] Invalid user data received from /api/users/me');
+          return false;
+      }
+  
+      // Upsert user in local database
+      this.db.upsertUserFromServer(userToUpsert); // Pass the actual user data object
+      console.log(`[Client SyncUser] Successfully synced current user ${userToUpsert.id}`);
+  
+      return true;
+    } catch (error) {
+      console.error('[Client SyncUser] Error syncing current user:', error);
+      return false;
+    }
+  }
+
   public async syncNotes(workspaceId: string): Promise<void> {
     try {
       // First sync notes
@@ -514,7 +602,7 @@ class SyncService {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
+          'Cookie': `wos-session=${accessToken}`
         },
         body: JSON.stringify({ 
           changes: [change],
@@ -573,7 +661,7 @@ class SyncService {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
-          'Cookie': accessToken
+          'Cookie': `wos-session=${accessToken}`
         }
       });
       
@@ -706,7 +794,7 @@ class SyncService {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
-          'Cookie': accessToken
+          'Cookie': `wos-session=${accessToken}`
         }
       });
       
@@ -833,7 +921,7 @@ class SyncService {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
-          'Cookie': accessToken
+          'Cookie': `wos-session=${accessToken}`
         }
       });
       
@@ -943,10 +1031,17 @@ class SyncService {
       const localHash = this.computeWorkspaceHash(workspaceId);
       
       // 2. Get server comparison
-      const { data } = await this.api.post('/api/sync/workspace', { 
-        workspaceId,
-        clientHash: localHash
-      });
+      const { data } = await fetch(`${API_URL}/api/sync/workspace`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': `wos-session=${this.auth.getAccessToken()}`
+        },
+        body: JSON.stringify({ 
+          workspaceId,
+          clientHash: localHash
+        })
+      }).then(response => response.json());
 
       // 3. Process changes if needed
       if (data.requiresSync) {
@@ -1017,10 +1112,17 @@ class SyncService {
 
   private async updateWorkspaceHash(workspaceId: string): Promise<void> {
     const hash = this.computeWorkspaceHash(workspaceId);
-    await this.api.post('/api/sync/update-hash', {
-      workspaceId,
-      hash
-    });
+    await fetch(`${API_URL}/api/sync/update-hash`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cookie': `wos-session=${this.auth.getAccessToken()}`
+      },
+      body: JSON.stringify({ 
+        workspaceId,
+        hash
+      })
+    }).then(response => response.json());
   }
 
   public shutdown(): void {

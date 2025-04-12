@@ -5,6 +5,12 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { SQL_SCHEMAS } from '../../shared/sql-schemas';
+import AuthService from 'auth';
+
+// Configuration
+export interface DatabaseConfig {
+  dbPath?: string; // Custom path to database file
+}
 
 // Types
 export interface Workspace {
@@ -61,15 +67,32 @@ class DatabaseService {
   private static instance: DatabaseService;
 
   private constructor() {
+    // Default to userData/database
+    const dbPath = path.join(
+      app.getPath('userData'), 
+      'database', 
+      'horizon.db'
+    );
+    
     // Ensure the database directory exists
-    const userDataPath = app.getPath('userData');
-    const dbDir = path.join(userDataPath, 'database');
+    const dbDir = path.dirname(dbPath);
+
+    console.log(`🔶 [ELECTRON DB] Database path: ${dbPath}`);
+    // Handle force reset
+    const forceReset = process.argv.includes('--clean');
+    const parentDir = path.join(dbDir, '../');
+    console.log(`🔶 [ELECTRON DB] Parent directory: ${parentDir}`);
+    if (fs.existsSync(parentDir) && forceReset) {
+      console.log('🔶 [ELECTRON DB] Force reset flag found, deleting existing database');
+      fs.rmdirSync(parentDir, { recursive: true });
+      console.log('🔶 [ELECTRON DB] Deleted parent directory:', parentDir);
+    }
     
     if (!fs.existsSync(dbDir)) {
       fs.mkdirSync(dbDir, { recursive: true });
     }
-    
-    const dbPath = path.join(dbDir, 'horizon.db');
+
+    // Initialize database connection
     this.db = new Database(dbPath);
     
     // Enable foreign keys
@@ -99,6 +122,14 @@ class DatabaseService {
     this.db.exec(SQL_SCHEMAS.BLOCKS);
     this.db.exec(SQL_SCHEMAS.SYNC_LOG);
     this.db.exec(SQL_SCHEMAS.USERS);
+  }
+
+  public userExists(userId: string | null | undefined): boolean {
+    if (!userId) return false; // Explicitly handle null/undefined
+    
+    const stmt = this.db.prepare('SELECT id FROM users WHERE id = ?');
+    const user = stmt.get(userId) as { id: string } | undefined;
+    return !!user; // Checks for both null and undefined
   }
 
   // Workspaces CRUD operations
@@ -247,6 +278,12 @@ class DatabaseService {
     console.log(`🔶 [ELECTRON DB] Creating note with ID: ${noteId}, title: ${note.title}`);
     
     const now = new Date().toISOString();
+    const userExists = this.userExists(note.user_id);
+    
+    if (!userExists) throw new Error(`User ${note.user_id} not found`);
+    
+    const workspaceExists = this.getWorkspace(note.workspace_id);
+    if (!workspaceExists) throw new Error(`Workspace ${note.workspace_id} not found`);
     
     try {
       // Convert boolean to integer for SQLite
@@ -939,6 +976,28 @@ class DatabaseService {
   // Close the database connection
   public close(): void {
     this.db.close();
+  }
+
+  public upsertUserFromServer(userData: { 
+    id: string, 
+    email: string,
+    created_at?: string,
+    updated_at?: string
+  }): void {
+    const now = new Date().toISOString();
+    
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO users 
+      (id, email, created_at, updated_at) 
+      VALUES (?, ?, ?, ?)
+    `);
+    
+    stmt.run(
+      userData.id, 
+      userData.email, 
+      userData.created_at || now,
+      userData.updated_at || now
+    );
   }
 }
 

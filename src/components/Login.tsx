@@ -87,8 +87,24 @@ const Login: React.FC = () => {
                 onClick={() => {
                   console.log('Invoking Electron login');
                   window.electron.ipcRenderer.invoke('auth:login')
-                    .then(() => console.log('Login invoked successfully'))
-                    .catch(error => console.error('Error invoking login:', error));
+                    .then((result) => {
+                      console.log('Login invoked successfully', result);
+                      // Explicitly check authentication status after login
+                      return window.electron.ipcRenderer.invoke('auth:is-authenticated');
+                    })
+                    .then((isAuthenticated) => {
+                      console.log('Authentication status after login:', isAuthenticated);
+                      if (!isAuthenticated) {
+                        console.error('Login failed: Not authenticated');
+                      }
+                    })
+                    .catch(error => {
+                      console.error('Error invoking login:', error);
+                      // Attempt to get more details about the authentication failure
+                      window.electron.ipcRenderer.invoke('auth:get-user-id')
+                        .then(userId => console.log('User ID after failed login:', userId))
+                        .catch(idError => console.error('Error getting user ID:', idError));
+                    });
                 }}
                 style={{ display: 'inline-block', textDecoration: 'none', textAlign: 'center' }}
               >

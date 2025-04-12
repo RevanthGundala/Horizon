@@ -3,9 +3,8 @@ export const SQL_SCHEMAS = {
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL,
-        password TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        created_at TEXT,
+        updated_at TEXT
       );
     `,
   

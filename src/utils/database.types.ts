@@ -11,50 +11,50 @@ export type Database = {
     Tables: {
       blocks: {
         Row: {
-          client_updated_at: string | null
           content: string | null
-          created_at: string | null
+          created_at: string
           id: string
-          metadata: Json | null
+          metadata: string | null
+          note_id: string
           order_index: number
-          page_id: string | null
-          sync_status: string | null
+          server_updated_at: string | null
+          sync_status: string
           type: string
-          updated_at: string | null
-          user_id: string | null
+          updated_at: string
+          user_id: string
         }
         Insert: {
-          client_updated_at?: string | null
           content?: string | null
-          created_at?: string | null
-          id?: string
-          metadata?: Json | null
+          created_at: string
+          id: string
+          metadata?: string | null
+          note_id: string
           order_index: number
-          page_id?: string | null
-          sync_status?: string | null
+          server_updated_at?: string | null
+          sync_status?: string
           type: string
-          updated_at?: string | null
-          user_id?: string | null
+          updated_at: string
+          user_id: string
         }
         Update: {
-          client_updated_at?: string | null
           content?: string | null
-          created_at?: string | null
+          created_at?: string
           id?: string
-          metadata?: Json | null
+          metadata?: string | null
+          note_id?: string
           order_index?: number
-          page_id?: string | null
-          sync_status?: string | null
+          server_updated_at?: string | null
+          sync_status?: string
           type?: string
-          updated_at?: string | null
-          user_id?: string | null
+          updated_at?: string
+          user_id?: string
         }
         Relationships: [
           {
-            foreignKeyName: "blocks_page_id_fkey"
-            columns: ["page_id"]
+            foreignKeyName: "blocks_note_id_fkey"
+            columns: ["note_id"]
             isOneToOne: false
-            referencedRelation: "pages"
+            referencedRelation: "notes"
             referencedColumns: ["id"]
           },
           {
@@ -66,157 +66,66 @@ export type Database = {
           },
         ]
       }
-      databases: {
+      notes: {
         Row: {
+          content: string | null
+          created_at: string
           id: string
-          name: string | null
-          page_id: string | null
-          user_id: string | null
-        }
-        Insert: {
-          id?: string
-          name?: string | null
-          page_id?: string | null
-          user_id?: string | null
-        }
-        Update: {
-          id?: string
-          name?: string | null
-          page_id?: string | null
-          user_id?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "databases_page_id_fkey"
-            columns: ["page_id"]
-            isOneToOne: false
-            referencedRelation: "pages"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "databases_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      embeddings: {
-        Row: {
-          block_id: string | null
-          created_at: string | null
-          embedding: string | null
-          id: string
-          user_id: string | null
-        }
-        Insert: {
-          block_id?: string | null
-          created_at?: string | null
-          embedding?: string | null
-          id?: string
-          user_id?: string | null
-        }
-        Update: {
-          block_id?: string | null
-          created_at?: string | null
-          embedding?: string | null
-          id?: string
-          user_id?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "embeddings_block_id_fkey"
-            columns: ["block_id"]
-            isOneToOne: false
-            referencedRelation: "blocks"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "embeddings_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      pages: {
-        Row: {
-          client_updated_at: string | null
-          created_at: string | null
-          id: string
-          is_favorite: boolean | null
+          is_favorite: number | null
           parent_id: string | null
-          sync_status: string | null
+          server_updated_at: string | null
+          sync_status: string
           title: string
-          type: string | null
-          updated_at: string | null
-          user_id: string | null
+          updated_at: string
+          user_id: string
+          workspace_id: string
         }
         Insert: {
-          client_updated_at?: string | null
-          created_at?: string | null
-          id?: string
-          is_favorite?: boolean | null
+          content?: string | null
+          created_at: string
+          id: string
+          is_favorite?: number | null
           parent_id?: string | null
-          sync_status?: string | null
+          server_updated_at?: string | null
+          sync_status?: string
           title: string
-          type?: string | null
-          updated_at?: string | null
-          user_id?: string | null
+          updated_at: string
+          user_id: string
+          workspace_id: string
         }
         Update: {
-          client_updated_at?: string | null
-          created_at?: string | null
+          content?: string | null
+          created_at?: string
           id?: string
-          is_favorite?: boolean | null
+          is_favorite?: number | null
           parent_id?: string | null
-          sync_status?: string | null
+          server_updated_at?: string | null
+          sync_status?: string
           title?: string
-          type?: string | null
-          updated_at?: string | null
-          user_id?: string | null
+          updated_at?: string
+          user_id?: string
+          workspace_id?: string
         }
         Relationships: [
           {
-            foreignKeyName: "pages_parent_id_fkey"
+            foreignKeyName: "notes_parent_id_fkey"
             columns: ["parent_id"]
             isOneToOne: false
-            referencedRelation: "pages"
+            referencedRelation: "notes"
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "pages_user_id_fkey"
+            foreignKeyName: "notes_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "users"
             referencedColumns: ["id"]
           },
-        ]
-      }
-      records: {
-        Row: {
-          database_id: string | null
-          id: string
-          values: Json | null
-        }
-        Insert: {
-          database_id?: string | null
-          id?: string
-          values?: Json | null
-        }
-        Update: {
-          database_id?: string | null
-          id?: string
-          values?: Json | null
-        }
-        Relationships: [
           {
-            foreignKeyName: "records_database_id_fkey"
-            columns: ["database_id"]
+            foreignKeyName: "notes_workspace_id_fkey"
+            columns: ["workspace_id"]
             isOneToOne: false
-            referencedRelation: "databases"
+            referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
         ]
@@ -224,37 +133,34 @@ export type Database = {
       sync_log: {
         Row: {
           action: string
-          created_at: string | null
-          device_id: string | null
+          created_at: string
           entity_id: string
           entity_type: string
           error_message: string | null
           id: string
-          payload: Json
+          payload: string
           status: string
           synced_at: string | null
         }
         Insert: {
           action: string
-          created_at?: string | null
-          device_id?: string | null
+          created_at: string
           entity_id: string
           entity_type: string
           error_message?: string | null
           id: string
-          payload: Json
+          payload: string
           status?: string
           synced_at?: string | null
         }
         Update: {
           action?: string
-          created_at?: string | null
-          device_id?: string | null
+          created_at?: string
           entity_id?: string
           entity_type?: string
           error_message?: string | null
           id?: string
-          payload?: Json
+          payload?: string
           status?: string
           synced_at?: string | null
         }
@@ -262,19 +168,58 @@ export type Database = {
       }
       users: {
         Row: {
-          created_at: string | null
+          created_at: string
           email: string
           id: string
+          password: string
+          updated_at: string
         }
         Insert: {
-          created_at?: string | null
+          created_at: string
           email: string
           id: string
+          password: string
+          updated_at: string
         }
         Update: {
-          created_at?: string | null
+          created_at?: string
           email?: string
           id?: string
+          password?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      workspaces: {
+        Row: {
+          created_at: string
+          id: string
+          is_favorite: number | null
+          name: string
+          server_updated_at: string | null
+          sync_status: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at: string
+          id: string
+          is_favorite?: number | null
+          name: string
+          server_updated_at?: string | null
+          sync_status?: string
+          updated_at: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_favorite?: number | null
+          name?: string
+          server_updated_at?: string | null
+          sync_status?: string
+          updated_at?: string
+          user_id?: string
         }
         Relationships: []
       }

@@ -4,98 +4,130 @@ import "@blocknote/core/fonts/inter.css";
 import { BlockNoteView } from "@blocknote/mantine";
 import "@blocknote/mantine/style.css";
 import { useCreateBlockNote } from "@blocknote/react";
-import SearchBar from './components/SearchBar';
 import ChatInterface from './components/ChatInterface';
 import CardGrid, { Card } from './components/CardGrid';
 import { useNavigate } from '@tanstack/react-router';
-import SyncStatus from './components/SyncStatus';
 import './styles/SyncStatus.css';
-import { setupNetworkDetection } from './utils/db';
-import { usePages, useCreatePage } from './hooks/usePages';
+import { setupNetworkDetection } from './utils/services/db';
 import { useAuth } from './contexts/auth-context';
+import { useWorkspaces, useCreateWorkspace, useWorkspaceNotes, useCreateNote } from './hooks/useWorkspaces';
+import { useQueryClient } from '@tanstack/react-query';
+import { Note } from './utils/types/index';
+import Onboarding from './components/Onboarding';
 
 function App() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [cards, setCards] = useState<Card[]>([]);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   
   const navigate = useNavigate();
   const { userId } = useAuth();
+  const queryClient = useQueryClient();
   
-  // Fetch pages to display as cards
-  const { data: pages, isLoading: isPagesLoading } = usePages();
-  const createPageMutation = useCreatePage();
+  // Fetch workspaces
+  const { data: workspaces, isLoading: isWorkspacesLoading } = useWorkspaces();
+  
+  // Fetch notes for the active workspace
+  const { data: workspaceNotes, isLoading: isNotesLoading } = useWorkspaceNotes(
+    activeWorkspaceId || '',
+    {
+      queryKey: ['workspace-notes', activeWorkspaceId],
+      enabled: !!activeWorkspaceId
+    }
+  );
+  
+  // Create mutation for notes
+  const { mutateAsync: createNote } = useCreateNote();
   
   // Initialize network detection
   useEffect(() => {
     setupNetworkDetection();
   }, []);
   
-  // Update cards when pages are loaded
+  // Check if we need to show onboarding (no workspaces yet)
   useEffect(() => {
-    if (pages && !isPagesLoading) {
-      const newCards = pages.map(page => ({
-        id: page.id,
-        title: page.title,
-        description: page.type || 'Page',
-        lastEdited: new Date(page.updated_at).toLocaleString(),
-      }));
-      setCards(newCards);
+    if (!isWorkspacesLoading && workspaces && userId) {
+      console.log('Workspace check - found workspaces:', workspaces.length, workspaces.map(w => w.name).join(', '));
+      setShowOnboarding(workspaces.length === 0);
     }
-  }, [pages, isPagesLoading]);
+  }, [workspaces, isWorkspacesLoading, userId]);
+  
+  // Set active workspace when workspaces are loaded
+  useEffect(() => {
+    if (!isWorkspacesLoading && workspaces && workspaces.length > 0) {
+      // Set the first workspace as active
+      setActiveWorkspaceId(workspaces[0].id);
+    }
+  }, [workspaces, isWorkspacesLoading]);
+
+  // Update cards when notes are loaded for the active workspace
+  useEffect(() => {
+    if (workspaceNotes && !isNotesLoading && activeWorkspaceId) {
+      // Convert notes to cards
+      const noteCards = workspaceNotes.map(note => ({
+        id: note.id,
+        title: note.title,
+        description: 'Note',
+        lastEdited: new Date(note.updated_at).toLocaleString(),
+      }));
+      
+      setCards(noteCards);
+    }
+  }, [workspaceNotes, isNotesLoading, activeWorkspaceId]);
 
   // Toggle chat interface
   const toggleChat = () => {
     setIsChatOpen(!isChatOpen);
   };
-
+  
   // Handle creating a new card
   const handleCreateCard = async () => {
     try {
-      // Generate a unique ID for the new page
-      const newId = crypto.randomUUID();
-      
-      // Make sure we have a valid user ID
-      if (!userId) {
-        console.error('Cannot create page: No user ID available');
+      // Make sure we have an active workspace
+      if (!activeWorkspaceId) {
+        console.error('Cannot create note: No active workspace');
         return;
       }
       
-      console.log('Creating page with user ID:', userId);
-      
-      // Create the page in the database
-      const newPage = await createPageMutation.mutateAsync({
-        id: newId,
-        title: 'Untitled Page',
-        parent_id: null,
-        user_id: userId,
-        is_favorite: 0,
-        type: 'note'
-        // Removed client_updated_at field to match backend schema
+      // Create the note in the database
+      const newNote = await createNote({
+        title: 'Untitled Note',
+        workspaceId: activeWorkspaceId,
+        parentId: null // Top-level note in workspace
       });
       
-      if (newPage) {
-        // Navigate to the new page
-        navigate({ to: '/page/$pageId', params: { pageId: newId } });
+      if (newNote) {
+        // Navigate to the new note (using the note ID as page ID for now)
+        navigate({ to: '/note/$noteId', params: { noteId: newNote.id } });
       } else {
-        console.error('Failed to create new page');
+        console.error('Failed to create new note');
       }
     } catch (error) {
-      console.error('Error creating new page:', error);
+      console.error('Error creating new note:', error);
     }
   };
 
+  // If onboarding is needed, show that instead of the main app
+  if (showOnboarding) {
+    return <Onboarding onComplete={() => setShowOnboarding(false)} />;
+  }
+
   return (
-      <div className="app-page">
+      <div className="app-note">
         <div className="app-content">
           <header className="App-header">
             <h2>Welcome to Horizon</h2>
-            <p>Your canvas for ideas and knowledge</p>
-            <SyncStatus />
+            <p>
+              {workspaces && workspaces.length > 0 
+                ? `Workspace: ${workspaces[0].name}` 
+                : 'Your canvas for ideas and knowledge'}
+            </p>
           </header>
           
           <main className="home-container">
-            {isPagesLoading ? (
-              <div className="loading-indicator">Loading pages...</div>
+            {isNotesLoading ? (
+              <div className="loading-indicator">Loading notes...</div>
             ) : (
               <CardGrid cards={cards} onCreateCard={handleCreateCard} />
             )}
@@ -107,15 +139,6 @@ function App() {
           </footer>
         </div>
 
-        {/* Add the SearchBar component */}
-        {/* <SearchBar 
-          onSubmit={handleSearchSubmit} 
-          onFocusChange={handleSearchFocusChange}
-          onCancel={handleSearchCancel}
-          isLoading={isSearchLoading}
-        /> */}
-
-        {/* Chat toggle button */}
         <button 
           className={`chat-toggle-button ${isChatOpen ? 'open' : ''}`}
           onClick={toggleChat}

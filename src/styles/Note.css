@@ -1,0 +1,103 @@
+.note-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 1rem;
+  overflow: hidden;
+}
+
+.note-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.back-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: var(--text-color);
+  padding: 0.25rem 0.5rem;
+  margin-right: 1rem;
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+}
+
+.back-button:hover {
+  background-color: var(--hover-bg);
+}
+
+.note-title {
+  flex: 1;
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-editor {
+  flex: 1;
+  overflow: auto;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background-color: var(--background-color);
+}
+
+.note-loading,
+.note-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-color);
+}
+
+.note-error button {
+  margin-top: 1rem;
+  padding: 0.5rem 1rem;
+  background-color: var(--accent-color);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.note-error button:hover {
+  background-color: var(--accent-color-dark);
+}
+
+/* BlockNote editor theming */
+.note-editor .bn-container {
+  --bn-colors-editor-background: var(--background-color);
+  --bn-colors-menu-background: var(--sidebar-bg);
+  --bn-colors-tooltip-background: var(--sidebar-bg);
+  --bn-colors-menu-text: var(--text-color);
+  --bn-colors-tooltip-text: var(--text-color);
+  --bn-colors-border: var(--border-color);
+  --bn-colors-shadow: rgba(0, 0, 0, 0.1);
+
+  border: none;
+  height: 100%;
+}
+
+.note-editor .bn-editor {
+  height: 100%;
+  font-family: 'Inter', sans-serif;
+}
+
+/* Dark mode overrides */
+.dark-mode .note-editor .bn-container {
+  --bn-colors-menu-background: var(--sidebar-bg);
+  --bn-colors-tooltip-background: var(--sidebar-bg);
+  --bn-colors-menu-text: var(--text-color);
+  --bn-colors-tooltip-text: var(--text-color);
+  --bn-colors-shadow: rgba(0, 0, 0, 0.2);
+}

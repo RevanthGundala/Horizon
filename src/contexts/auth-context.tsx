@@ -10,242 +10,265 @@ import React, {
   ReactNode,
   useState,
   useEffect,
+  useCallback,
 } from 'react';
-import {useNavigate} from '@tanstack/react-router';
-import { getUrl } from '../utils/api';
+import { useNavigate } from '@tanstack/react-router';
+// Assuming getUrl is correctly defined elsewhere
+// import { getUrl } from '../utils/api';
 
+// Define the shape of the context data
 type AuthContextType = {
-  isLoading: boolean;
+  isLoading: boolean; // Is the initial auth check running?
   logout: () => Promise<void>;
-  userId: string | null;
-  isOffline: boolean;
+  userId: string | null; // The authenticated user's ID
+  isOffline: boolean; // Is the application offline?
+  isAuthenticated: boolean; // Is the user currently authenticated?
 };
 
-// Context
+// Create the context
 const AuthContext = createContext<AuthContextType | null>(null);
 
-// Provider
+// Create the provider component
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [isOffline, setIsOffline] = useState(false);
-  const [offlineUserId, setOfflineUserId] = useState<string | null>(null);
-  
-  // Check for network status
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  // Removed: const [isAuthenticated, setIsAuthenticated] = useState(false);
+  // Removed: const [offlineUserId, setOfflineUserId] = useState<string | null>(null); // Seems unused
+
+  // --- Network Status Handling ---
   useEffect(() => {
-    // Check initial status
-    setIsOffline(!navigator.onLine);
-    
-    // Set up event listeners for online/offline status
-    const handleOnline = () => {
-      console.log('App is online');
-      setIsOffline(false);
+      const handleOnline = () => {
+          console.log('App is online');
+          setIsOffline(false);
+      };
+      const handleOffline = () => {
+          console.log('App is offline');
+          setIsOffline(true);
+      };
+
+      window.addEventListener('online', handleOnline);
+      window.addEventListener('offline', handleOffline);
+
+      // Clear potentially stale user ID from storage on initial load?
+      // Consider if this is truly desired or if you need persistence across restarts
+      // localStorage.removeItem('horizon-user-id');
+      // sessionStorage.removeItem('horizon-user-id');
+
+      return () => {
+          window.removeEventListener('online', handleOnline);
+          window.removeEventListener('offline', handleOffline);
+      };
+  }, []);
+
+  // --- IPC Listener for Authentication Success ---
+  useEffect(() => {
+    let unsubscribe: (() => void) | null = null; // Variable to hold the cleanup function
+
+    const handleAuthSuccess = (userId: string) => { // Listener receives userId now
+      console.log('Renderer received [auth-success] notification from main process for user:', userId);
+      queryClient.invalidateQueries({ queryKey: ['auth'] });
     };
-    
-    const handleOffline = () => {
-      console.log('App is offline');
-      setIsOffline(true);
-    };
-    
-    // Add event listeners
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    
-    // Try to get the last known user ID from localStorage
-    const storedUserId = localStorage.getItem('horizon-user-id');
-    if (storedUserId) {
-      setOfflineUserId(storedUserId);
-    }
-    
-    // Listen for authentication status changes from Electron main process
-    if (window.electron) {
-      console.log('Setting up auth status change listener');
-      // First check if we're already authenticated with the Electron process
-      window.electron.ipcRenderer.invoke('auth:is-authenticated')
-        .then((isAuthenticated: boolean) => {
-          console.log('Initial auth check with electron:', isAuthenticated);
-          if (isAuthenticated) {
-            return window.electron.ipcRenderer.invoke('auth:get-user-id');
-          }
-          return null;
-        })
-        .then((userId: string | null) => {
-          if (userId) {
-            console.log('Got user ID from electron:', userId);
-            // Store the user ID for offline access
-            localStorage.setItem('horizon-user-id', userId);
-            // Refetch auth status
-            queryClient.invalidateQueries({ queryKey: ['auth'] });
-            // Navigate to home page if not already there
-            navigate({ to: '/' });
-          }
-        })
-        .catch(err => {
-          console.error('Error checking auth status with electron:', err);
-        });
+
+    if (window.electron?.ipcRenderer?.on) {
+      console.log('Renderer setting up [auth-success] listener using window.electron.ipcRenderer.on');
       
-      // Set up listener for future auth status changes
-      window.electron.ipcRenderer.receive('auth:status-changed', (isAuthenticated: boolean) => {
-        console.log('Received auth status change:', isAuthenticated);
-        if (isAuthenticated) {
-          // Get the user ID from electron
-          window.electron.ipcRenderer.invoke('auth:get-user-id')
-            .then((userId: string | null) => {
-              if (userId) {
-                console.log('Got user ID from electron after status change:', userId);
-                // Store the user ID for offline access
-                localStorage.setItem('horizon-user-id', userId);
-              }
-              // Refetch auth status
-              queryClient.invalidateQueries({ queryKey: ['auth'] });
-              // Navigate to home page
-              navigate({ to: '/' });
-            })
-            .catch(err => {
-              console.error('Error getting user ID after auth status change:', err);
-              // Still try to refetch and navigate even if we can't get the user ID
-              queryClient.invalidateQueries({ queryKey: ['auth'] });
-              navigate({ to: '/' });
-            });
-        }
-      });
-    }
-    
-    // Clean up
+      // Explicitly type the listener and store the cleanup function
+      const listener = (event: any, userId: string) => handleAuthSuccess(userId);
+      window.electron.ipcRenderer.on('auth-success', listener);
+      
+      // Create an explicit unsubscribe function
+      unsubscribe = () => {
+        window.electron.ipcRenderer.removeListener('auth-success', listener);
+      };
+    } else {
+      console.warn('AuthProvider: window.electron.ipcRenderer.on is not available. Cannot set up IPC listener.');
+    } 
+
+    // Cleanup: Call the unsubscribe function returned by window.electron.ipcRenderer.on
     return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, [navigate, queryClient]);
-  
-  const { data, isLoading } = useQuery({
-    queryKey: ['auth'],
-    queryFn: async (): Promise<{ userId: string } | null> => {
-      try {
-        // For Electron app, check authentication status first using Electron IPC
-        if (window.electron) {
-          console.log('Checking authentication with Electron IPC');
-          const isAuthenticated = await window.electron.ipcRenderer.invoke('auth:is-authenticated');
-          
-          if (isAuthenticated) {
-            console.log('Authenticated with Electron');
-            const userId = await window.electron.ipcRenderer.invoke('auth:get-user-id');
-            if (userId) {
-              console.log('Got user ID from Electron:', userId);
-              // Store for offline use
-              localStorage.setItem('horizon-user-id', userId);
-              return { userId };
-            }
-          }
-        }
-        
-        // If we're offline, use the stored user ID
-        if (!navigator.onLine) {
-          console.log('Offline mode: using stored user ID');
-          const storedUserId = localStorage.getItem('horizon-user-id');
-          if (storedUserId) {
-            return { userId: storedUserId };
-          }
-          return null;
-        }
-        
-        // Use the dedicated authentication check endpoint
-        const authRes = await fetch(getUrl('/api/auth/me'), {
-          credentials: 'include',
-        });
-        console.log('Auth check response status:', authRes.status);
-        
-        if (!authRes.ok) {
-          console.error('Authentication check failed:', authRes.status);
-          
-          // If we're offline but have a stored user ID, allow access
-          if (!navigator.onLine && offlineUserId) {
-            return { userId: offlineUserId };
-          }
-          
-          navigate({ to: '/login' });
-          return null;
-        }
-        
-        const authData = await authRes.json();
-        
-        // Store the user ID for offline access
-        if (authData && authData.userId) {
-          localStorage.setItem('horizon-user-id', authData.userId);
-        }
-        
-        return authData;
-      } catch (error) {
-        console.error('Error checking authentication:', error);
-        
-        // If we're offline but have a stored user ID, allow access
-        if (!navigator.onLine && offlineUserId) {
-          console.log('Offline mode: using stored user ID after error');
-          return { userId: offlineUserId };
-        }
-        
-        // Last resort: check localStorage even if we're online
-        const storedUserId = localStorage.getItem('horizon-user-id');
-        if (storedUserId) {
-          console.log('Using stored user ID as last resort');
-          return { userId: storedUserId };
-        }
-        
-        navigate({ to: '/login' });
-        return null;
+      if (unsubscribe) {
+        console.log('Renderer cleaning up [auth-success] listener.');
+        unsubscribe(); // Execute the cleanup function
       }
-    },
-    retry: false,
-    // Don't refetch on window focus when offline
-    refetchOnWindowFocus: navigator.onLine,
+    };
+  }, [queryClient]); // Dependency array
+    // --- Debugging Helper ---
+  const logAuthenticationState = useCallback(async () => {
+      console.log('===== RENDERER: AUTHENTICATION DEBUG =====');
+      if (!window.electron) {
+          console.log('Renderer Debug: No electron window');
+          return;
+      }
+      try {
+          const authed = await window.electron.ipcRenderer.invoke('auth:is-authenticated');
+          console.log('Renderer Debug: Is Authenticated (IPC):', authed);
+
+          const userId = await window.electron.ipcRenderer.invoke('auth:get-user-id');
+          console.log('Renderer Debug: User ID (IPC):', userId);
+
+          if (userId) {
+              const exists = await window.electron.ipcRenderer.invoke('db:user-exists', userId);
+              console.log('Renderer Debug: User Exists in DB (IPC):', exists);
+          }
+      } catch (error) {
+          console.error('Renderer Debug: Authentication state check failed:', error);
+      } finally {
+          console.log('===== RENDERER: END AUTHENTICATION DEBUG =====');
+      }
+  }, []);
+
+
+  // --- Core Authentication Check Function (called by useQuery) ---
+  const checkAuthStatus = useCallback(async (): Promise<{ userId: string } | null> => {
+      console.log('Renderer: Running checkAuthStatus...');
+      await logAuthenticationState(); // Log current state before checking
+
+      if (!window.electron) {
+          console.log('Renderer Check: No electron window, assuming logged out.');
+          navigate({ to: '/login' }); // Navigate if check runs without electron context
+          return null; // Indicate failure
+      }
+
+      try {
+          // Check 1: Is the main process reporting authenticated state?
+          const authed = await window.electron.ipcRenderer.invoke('auth:is-authenticated');
+          console.log('Renderer Check: auth:is-authenticated result:', authed);
+          if (!authed) {
+              console.log('Renderer Check: Not authenticated via IPC, redirecting to login.');
+              navigate({ to: '/login' });
+              return null;
+          }
+
+          // Check 2: Can we get a User ID?
+          const userId = await window.electron.ipcRenderer.invoke('auth:get-user-id');
+          console.log('Renderer Check: auth:get-user-id result:', userId);
+          if (!userId) {
+              console.log('Renderer Check: No user ID found via IPC, redirecting to login.');
+              // Maybe logout explicitly here if this happens?
+              // await window.electron.ipcRenderer.invoke('auth:logout');
+              navigate({ to: '/login' });
+              return null;
+          }
+
+          // Check 3: Does the user data exist locally? (Optional but good for integrity)
+          const exists = await window.electron.ipcRenderer.invoke('db:user-exists', userId);
+          console.log('Renderer Check: db:user-exists result:', exists);
+
+          if (!exists) {
+              console.warn(`Renderer Check: User ${userId} authenticated but not found in local DB. Attempting sync...`);
+              try {
+                  const syncResult = await window.electron.ipcRenderer.invoke('sync:user', userId);
+                  console.log('Renderer Check: User Sync Result:', syncResult);
+
+                  // Re-check existence after sync attempt
+                  const reCheckExists = await window.electron.ipcRenderer.invoke('db:user-exists', userId);
+                  console.log('Renderer Check: User Exists After Sync:', reCheckExists);
+
+                  if (!reCheckExists) {
+                      console.error('Renderer Check: User still does not exist after sync, critical error. Logging out.');
+                      // Force logout if sync fails to create user record
+                      await window.electron.ipcRenderer.invoke('auth:logout');
+                      navigate({ to: '/login' });
+                      return null;
+                  }
+                  // If sync succeeded and user now exists, proceed.
+              } catch (syncError) {
+                  console.error('Renderer Check: Failed to sync user:', syncError);
+                  // Decide recovery strategy: maybe allow proceeding, maybe force logout
+                  await window.electron.ipcRenderer.invoke('auth:logout');
+                  navigate({ to: '/login' });
+                  return null;
+              }
+          }
+
+          // If all checks pass:
+          console.log(`Renderer Check: Authentication successful for user ${userId}.`);
+          return { userId }; // Success, return user data
+
+      } catch (error) {
+          console.error('Renderer Check: Auth check failed with error:', error);
+          // Attempt logout on unexpected errors during check
+          try {
+               if (window.electron) await window.electron.ipcRenderer.invoke('auth:logout');
+          } catch (logoutErr) {
+               console.error("Renderer Check: Failed to logout after auth check error:", logoutErr);
+          }
+          navigate({ to: '/login' });
+          return null; // Indicate failure
+      }
+  }, [navigate, logAuthenticationState]); // Dependencies for useCallback
+
+
+  // --- React Query for Auth State ---
+  const { data, isLoading, isSuccess, isError } = useQuery({
+      queryKey: ['auth'],
+      queryFn: checkAuthStatus, // Use the detailed check function
+      retry: false, // Don't retry on failure, checkAuthStatus handles navigation
+      refetchOnWindowFocus: false, // Avoid unnecessary checks on focus
+      staleTime: 5 * 60 * 1000, // Consider data fresh for 5 mins unless invalidated
+      gcTime: 15 * 60 * 1000, // Keep data in cache longer
   });
 
-  const logout = async () => {
-    try {
-      // Remove the stored user ID
-      localStorage.removeItem('horizon-user-id');
-      setOfflineUserId(null);
-      
-      // If online, call the logout endpoint
-      if (navigator.onLine) {
-        await fetch(getUrl('/api/auth/logout'), {
-          method: 'GET',
-          credentials: 'include',
-        });
-        
-        // Manually clear the cookie in the browser
-        document.cookie = "wos-session=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; SameSite=None; Secure";
+  // --- Logout Function ---
+  const logout = useCallback(async () => {
+      console.log('Renderer: Initiating logout...');
+      try {
+          if (window.electron) {
+              await window.electron.ipcRenderer.invoke('auth:logout');
+              console.log('Renderer: Main process logout successful.');
+          }
+          // Clear local state if needed (main process should handle secure storage)
+          // localStorage.removeItem('horizon-user-id'); // Likely redundant if main handles storage
+      } catch (error) {
+          console.error('Renderer: Logout failed:', error);
+          // Still attempt to navigate even if IPC fails
+      } finally {
+          // Always clear query cache and navigate on logout attempt
+          queryClient.invalidateQueries({ queryKey: ['auth'] }); // Clear auth state
+          queryClient.removeQueries({ queryKey: ['auth']}); // Remove data completely
+          navigate({ to: '/login', replace: true }); // Use replace to avoid back button issues
+          console.log('Renderer: Navigated to login.');
       }
-      
-      // Invalidate and reset the auth query cache
-      queryClient.invalidateQueries({ queryKey: ['auth'] });
-      queryClient.setQueryData(['auth'], null);
-      
-      // Redirect to login page
-      navigate({ to: '/login' });
-    } catch (error) {
-      console.error('Error logging out:', error);
-      // Still try to redirect to login page even if there's an error
-      navigate({ to: '/login' });
-    }
-  };
+  }, [navigate, queryClient]);
 
-  // Determine the effective user ID (from online auth or offline storage)
-  const effectiveUserId = data?.userId || (isOffline ? offlineUserId : null);
 
-  return <AuthContext.Provider value={{ 
-    isLoading, 
-    userId: effectiveUserId,
-    logout,
-    isOffline,
-  }}>{children}</AuthContext.Provider>;
+  // --- Derived State ---
+  // User ID comes directly from the successful query data
+  const effectiveUserId = data?.userId ?? null;
+  // User is authenticated if the query is successful and returned data
+  const derivedIsAuthenticated = isSuccess && !!effectiveUserId;
+
+  // Log derived state changes for debugging
+  useEffect(() => {
+      console.log(`Renderer Auth State Update: isLoading=${isLoading}, isSuccess=${isSuccess}, isError=${isError}, derivedIsAuthenticated=${derivedIsAuthenticated}, userId=${effectiveUserId}`);
+      // Handle case where query fails after initial success (e.g., token expires and check fails)
+      if(isError && !isLoading) {
+           console.log("Renderer: Auth query returned error, ensuring navigation to login.");
+           navigate({ to: '/login' });
+      }
+  }, [isLoading, isSuccess, isError, derivedIsAuthenticated, effectiveUserId, navigate]);
+
+
+  // --- Provide Context Value ---
+  return (
+      <AuthContext.Provider value={{
+          isLoading, // Let consumers know if the initial check is happening
+          userId: effectiveUserId,
+          logout,
+          isOffline,
+          isAuthenticated: derivedIsAuthenticated, // Use the state derived from the query
+      }}>
+          {children}
+      </AuthContext.Provider>
+  );
 };
 
-// Hook to use it
+// --- Hook to use the context ---
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
-    throw new Error('useAuth must be used within AuthProvider');
+      throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
 };

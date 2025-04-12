@@ -14,6 +14,14 @@ const userHandler = async (event: APIGatewayProxyEvent, user: any): Promise<APIG
     });
 
     await client.connect();
+    console.log(`[userHandler] User object received from withAuth: ${JSON.stringify(user)}`); // Log the whole object
+    const userIdFromMiddleware = user?.id;
+    console.log(`[userHandler] Attempting to query for user ID: ${userIdFromMiddleware}`); // Log the specific ID
+  
+    if (!userIdFromMiddleware) {
+       console.error("User ID missing from middleware result!");
+       // Handle error appropriately
+    }
 
     try {
       // Query the database for the user

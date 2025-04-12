@@ -1,5 +1,6 @@
 import { ipcMain } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 import DatabaseService, { Block, Note } from './index';
 import SyncService from './sync';
 import AuthService from '../auth';
@@ -23,6 +24,11 @@ export function setupDatabaseIpcHandlers(): void {
     return authService.getUserId();
   });
 
+  // Add to ipcMain handlers
+  ipcMain.handle('db:user-exists', async (event, userId: string) => {
+    return db.userExists(userId);
+  });
+
   // Notes
   ipcMain.handle('db:get-notes', (_event, workspaceId?: string, parentId?: string) => {
     return db.getNotes(workspaceId, parentId);
@@ -37,20 +43,33 @@ export function setupDatabaseIpcHandlers(): void {
   ipcMain.handle('db:create-note', (_event, noteData: Omit<Note, 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>) => {
     try {
       const id = noteData.id || uuidv4();
-      const userId = authService.getUserId() || 'anonymous';
+      const userId = noteData.user_id || authService.getUserId();
       
+      // Validate required fields
+      if (!userId) throw new Error('User ID is required');
+      if (!noteData.workspace_id) throw new Error('Workspace ID is required');
+      
+      // Verify referenced entities exist
+      const workspaceExists = db.getWorkspace(noteData.workspace_id);
+      const userExists = db.userExists(userId);
+      
+      if (!workspaceExists) throw new Error(`Workspace ${noteData.workspace_id} not found`);
+      if (!userExists) throw new Error(`User ${userId} not found`);
+  
       const note = {
         ...noteData,
         id,
-        user_id: userId
+        user_id: userId,
+        sync_status: 'created'
       };
       
       return db.createNote(note);
     } catch (error) {
       console.error('Error creating note:', error);
-      throw error;
+      throw error; // Rethrow for IPC to forward to renderer
     }
-  });
+  }); 
+  
 
   ipcMain.handle('db:update-note', (_event, id: string, updates: Partial<Omit<Note, 'id' | 'created_at' | 'updated_at' | 'sync_status' | 'server_updated_at'>>) => {
     return db.updateNote(id, updates);
@@ -205,6 +224,53 @@ export function setupDatabaseIpcHandlers(): void {
     const { notes, blocks } = db.getEntitiesToSync();
     return notes.length + blocks.length;
   });
+  
+  // Workspace operations
+  ipcMain.handle('db:get-workspaces', () => {
+    try {
+      return db.getWorkspaces();
+    } catch (error) {
+      console.error('Error getting workspaces:', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('db:create-workspace', (_event, workspaceData: any) => {
+    try {
+      const id = workspaceData.id || uuidv4();
+      const userId = workspaceData.user_id || authService.getUserId() || 'anonymous';
+      
+      const workspace = {
+        ...workspaceData,
+        id,
+        user_id: userId
+      };
+      
+      return db.createWorkspace(workspace);
+    } catch (error) {
+      console.error('Error creating workspace:', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('db:update-workspace', (_event, id: string, updates: any) => {
+    try {
+      return db.updateWorkspace(id, updates);
+    } catch (error) {
+      console.error('Error updating workspace:', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('db:delete-workspace', (_event, id: string) => {
+    try {
+      db.deleteWorkspace(id);
+      return { success: true };
+    } catch (error) {
+      console.error('Error deleting workspace:', error);
+      throw error;
+    }
+  });
 
   // Chat
   ipcMain.handle('chat:send-message', async (_event, messages: Array<{ role: string; content: string }>) => {
@@ -212,96 +278,307 @@ export function setupDatabaseIpcHandlers(): void {
       console.log(' [ELECTRON IPC] Sending chat message');
 
       if(!await syncService.checkNetworkStatus()) {
-        // TODO: Implement Ollama when Offline
-        console.log("TODO: Implement Ollama when Offline")
-        return;
+        // Return offline message
+        console.log(" [ELECTRON IPC] Device is offline, cannot send chat message");
+        return {
+          role: 'assistant',
+          content: "I'm sorry, but you appear to be offline. Please check your internet connection and try again."
+        };
       }
       
-      // Check if user is authenticated
+      // Check if user is authenticated - if not, use demo endpoint
       if (!authService.isAuthenticated()) {
-        console.error(' [ELECTRON IPC] User not authenticated for chat');
-        throw new Error('User not authenticated');
+        console.log(' [ELECTRON IPC] User not authenticated for chat, using demo endpoint');
+        return {
+          role: 'assistant',
+          content: "I'm sorry, but you need to be logged in to use the full chat feature. Please log in and try again."
+        };
       }
       
       // Get access token
       const accessToken = authService.getAccessToken();
       if (!accessToken) {
         console.error(' [ELECTRON IPC] No access token available for chat');
-        throw new Error('No access token available');
+        return {
+          role: 'assistant',
+          content: "I'm sorry, but I couldn't authenticate your session. Please try logging in again."
+        };
       }
       
-      // Send to chat API
+      // Send to chat API with retries
       console.log(`Sending chat request to ${API_URL}/api/chat`);
       
-      // If API is not available, return a friendly message
-      try {
-        const statusCheck = await fetch(`${API_URL}/api/status`, {
-          method: 'GET'
-        });
-        
-        if (!statusCheck.ok) {
-          console.log(` [ELECTRON IPC] API unavailable for chat: ${statusCheck.status}`);
-          return {
-            role: 'assistant',
-            content: "I'm sorry, but I'm currently unable to connect to the knowledge base. Check your internet connection and try again later."
-          };
-        }
-      } catch (error) {
-        console.log(` [ELECTRON IPC] API connection error for chat:`, error);
-        return {
-          role: 'assistant',
-          content: "I'm sorry, but I'm currently unable to connect to the knowledge base. Check your internet connection and try again later."
-        };
-      }
+      // Check API availability with a short timeout and retry
+      let apiCheckAttempt = 0;
+      const maxApiCheckAttempts = 2;
       
-      const response = await fetch(`${API_URL}/api/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Cookie': accessToken,
-          'X-Authorization': `Bearer ${accessToken}` // Try both auth methods
-        },
-        body: JSON.stringify({ messages }),
-      });
-      
-      // Check if response is ok
-      if (!response.ok) {
-        console.error(` [ELECTRON IPC] Chat API error: ${response.status} ${response.statusText}`);
-        // Instead of throwing an error, return a friendly message
-        return {
-          role: 'assistant',
-          content: "I'm sorry, but I encountered an error processing your request. " +
-                   "This could be due to a temporary service disruption. " + 
-                   "Please try again later or contact support if the issue persists."
-        };
-      }
-      
-      // Get response text
-      const responseText = await response.text();
-      console.log(' [ELECTRON IPC] Chat response received');
-      
-      // Parse the event stream and extract the assistant's message
-      const events = responseText.split('\n\n').filter(Boolean);
-      let assistantMessage = '';
-      
-      for (const event of events) {
-        if (event.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(event.substring(6));
-            if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
-              assistantMessage += data.choices[0].delta.content;
+      while (apiCheckAttempt < maxApiCheckAttempts) {
+        try {
+          console.log(` [ELECTRON IPC] API status check attempt ${apiCheckAttempt + 1}/${maxApiCheckAttempts}`);
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second timeout
+          
+          const statusCheck = await fetch(`${API_URL}/api/status`, {
+            method: 'GET',
+            signal: controller.signal
+          });
+          
+          clearTimeout(timeoutId);
+          
+          if (statusCheck.ok) {
+            console.log(` [ELECTRON IPC] API status check successful`);
+            break;
+          } else {
+            console.log(` [ELECTRON IPC] API unavailable for chat: ${statusCheck.status}`);
+            // Try next attempt
+            apiCheckAttempt++;
+            if (apiCheckAttempt < maxApiCheckAttempts) {
+              await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay before retry
             }
-          } catch (e) {
-            console.error(' [ELECTRON IPC] Error parsing event stream:', e);
+          }
+        } catch (error: any) {
+          console.log(` [ELECTRON IPC] API connection error for chat:`, error);
+          // Try next attempt
+          apiCheckAttempt++;
+          if (apiCheckAttempt < maxApiCheckAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay before retry
           }
         }
       }
       
+      // Main chat request with retries
+      let attempts = 0;
+      const maxAttempts = 3;
+      let lastError = null;
+      
+      while (attempts < maxAttempts) {
+        attempts++;
+        console.log(` [ELECTRON IPC] Chat API request attempt ${attempts}/${maxAttempts}`);
+        
+        try {
+          // Use AbortController for timeout
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+          
+          // Debug: Log the exact URL and token being used
+          console.log(` [ELECTRON IPC] Sending request to: ${API_URL}/api/chat`);
+          
+          const chatEndpoint = `${API_URL}/api/chat`;
+          
+          const response = await fetch(chatEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cookie': `wos-session=${accessToken}`, // Standard auth header
+              'Accept': 'application/json', // Expect JSON back
+            },
+            body: JSON.stringify({ 
+              messages,
+              timeout: 25,
+              temperature: 0.7,
+              stream: false // Disable streaming for now
+            }),
+            signal: controller.signal
+          }); 
+          
+          clearTimeout(timeoutId);
+          
+          // Check if response is ok
+          if (!response.ok) {
+            const statusCode = response.status;
+            console.error(` [ELECTRON IPC] Chat API error: ${statusCode} ${response.statusText}`);
+            
+            // Log detailed info for 302 redirects
+            if (statusCode === 302) {
+              console.log(` [ELECTRON IPC] 🔍 DEBUGGING REDIRECT - Status Code: ${statusCode}`);
+              console.log(` [ELECTRON IPC] 🔍 Response headers:`, Object.fromEntries([...response.headers]));
+              console.log(` [ELECTRON IPC] 🔍 Cookie used: wos-session=${accessToken ? accessToken.substring(0, 10) + '...' : 'null'}`);
+              
+              // Get the location header to see where it's trying to redirect
+              const location = response.headers.get('location');
+              if (location) {
+                console.log(` [ELECTRON IPC] 🔍 Redirect location: ${location}`);
+              }
+              
+              // Try to get response body even from error responses
+              try {
+                const errorBody = await response.text();
+                console.log(` [ELECTRON IPC] 🔍 Redirect response body: ${errorBody}`);
+              } catch (e) {
+                console.log(` [ELECTRON IPC] 🔍 Couldn't read redirect response body: ${e}`);
+              }
+            }
+            
+            // Special handling for specific status codes
+            if (statusCode === 401 || statusCode === 403) {
+              // Authentication issue - no need to retry
+              return {
+                role: 'assistant',
+                content: "I'm sorry, but your session has expired. Please log in again to continue using the chat feature."
+              };
+            }
+            
+            if (statusCode === 429) {
+              // Rate limit - wait longer before retrying
+              console.log(` [ELECTRON IPC] Rate limited, waiting before retry`);
+              await new Promise(resolve => setTimeout(resolve, 2000 * attempts));
+              continue;
+            }
+            
+            if (statusCode >= 500) {
+              // Server error - may be worth retrying
+              lastError = new Error(`Server error (${statusCode})`);
+              // Exponential backoff
+              await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
+              continue;
+            }
+            
+            // Other errors - provide appropriate message based on status code
+            return {
+              role: 'assistant',
+              content: "I'm sorry, but I encountered an error processing your request. " +
+                       "This could be due to a temporary service disruption. " + 
+                       "Please try again later or contact support if the issue persists."
+            };
+          }
+          
+          // Log response details
+          console.log(` [ELECTRON IPC] Response status: ${response.status} ${response.statusText}`);
+          console.log(` [ELECTRON IPC] Response headers:`, Object.fromEntries([...response.headers]));
+          
+          // Get response text
+          const responseText = await response.text();
+          console.log(' [ELECTRON IPC] Chat response received');
+          
+          // Debug: Log a preview of the response content
+          console.log(` [ELECTRON IPC] Response text (first 100 chars): ${responseText.substring(0, 100)}...`);
+          
+          // Check if the response is empty
+          if (!responseText || responseText.trim() === '') {
+            console.error(' [ELECTRON IPC] Empty response received');
+            if (attempts < maxAttempts) {
+              await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
+              continue;
+            } else {
+              return {
+                role: 'assistant',
+                content: "I'm sorry, but I received an empty response from our servers. This might be a temporary issue. Please try again later."
+              };
+            }
+          }
+          
+          // Parse the event stream and extract the assistant's message
+          const events = responseText.split('\n\n').filter(Boolean);
+          let assistantMessage = '';
+          
+          for (const event of events) {
+            if (event.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(event.substring(6));
+                if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
+                  assistantMessage += data.choices[0].delta.content;
+                }
+              } catch (e) {
+                console.error(' [ELECTRON IPC] Error parsing event stream:', e);
+              }
+            }
+          }
+          
+          // Check if we successfully parsed any content
+          if (assistantMessage) {
+            return {
+              role: 'assistant',
+              content: assistantMessage
+            };
+          } else {
+            // If no content was parsed but we got a response, try to use a different parsing approach
+            try {
+              // Attempt to parse as a direct JSON response
+              const jsonResponse = JSON.parse(responseText);
+              if (jsonResponse.text || jsonResponse.content || jsonResponse.message) {
+                return {
+                  role: 'assistant',
+                  content: jsonResponse.text || jsonResponse.content || jsonResponse.message
+                };
+              }
+            } catch (e) {
+              // Not JSON or unexpected format
+              console.error(' [ELECTRON IPC] Could not parse response as JSON:', e);
+            }
+            
+            // Use the response text directly as a last resort
+            // Strip any non-textual elements that might be in the response
+            const cleanedText = responseText.replace(/^data:\s*|[\{\}\[\]"']/g, '').trim();
+            if (cleanedText) {
+              return {
+                role: 'assistant',
+                content: cleanedText.length > 1000 ? 
+                  cleanedText.substring(0, 1000) + "... (response truncated)" : 
+                  cleanedText
+              };
+            }
+            
+            // If we get here, we couldn't extract a useful response
+            if (attempts < maxAttempts) {
+              await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
+              continue;
+            }
+          }
+          
+        } catch (error: any) {
+          console.error(` [ELECTRON IPC] Error on attempt ${attempts}:`, error);
+          lastError = error;
+          
+          // Check if it's a timeout or abort error
+          if (error.name === 'AbortError') {
+            console.log(' [ELECTRON IPC] Request timed out, retrying...');
+          }
+          
+          // Wait before retrying with exponential backoff
+          if (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
+            continue;
+          }
+        }
+      }
+      
+      // If we've exhausted all retries
+      console.error(' [ELECTRON IPC] All retry attempts failed:', lastError);
+      
+      // Use local fallback response when API is down
+      const userMessage = messages[messages.length - 1]?.content || '';
+      const isGreeting = /^(hi|hello|hey|greetings|howdy)/i.test(userMessage);
+      const isQuestion = /\?$/.test(userMessage);
+      const isAboutNotes = /note|editor|document|writing|text|content|save|edit/i.test(userMessage);
+      const isAboutWorkspace = /workspace|folder|organize|project/i.test(userMessage);
+      const isAboutSync = /sync|offline|connection|internet|cloud/i.test(userMessage);
+      
+      // Determine response based on message content
+      let localResponse = '';
+      
+      if (isGreeting) {
+        localResponse = "Hello! I'm currently operating in offline mode due to server connectivity issues. " +
+                       "I can help with basic information about using the app, but my capabilities are limited until the server connection is restored.";
+      } else if (isAboutNotes) {
+        localResponse = "You can create and edit notes even while offline. Your changes will be saved locally and will sync when the server connection is restored.";
+      } else if (isAboutWorkspace) {
+        localResponse = "Workspaces help you organize your notes. You can create multiple workspaces and add notes to them.";
+      } else if (isAboutSync) {
+        localResponse = "The app is currently having trouble connecting to the sync server. Your changes are being saved locally and will sync automatically when the connection is restored.";
+      } else if (isQuestion) {
+        localResponse = "I'm sorry, I can't answer that question right now because I'm operating in offline mode due to server connectivity issues. Please try again later when the server connection is restored.";
+      } else {
+        localResponse = "I'm sorry, but I'm having trouble connecting to our servers after multiple attempts. " +
+                       "I'm operating in a limited offline mode for now. Your work is still being saved locally " +
+                       "and will sync when connectivity is restored.";
+      }
+      
       return {
         role: 'assistant',
-        content: assistantMessage || 'Sorry, I could not generate a response.'
+        content: localResponse
       };
-    } catch (error) {
+      
+    } catch (error: any) {
       console.error(' [ELECTRON IPC] Error in chat:', error);
       // Return a helpful message instead of throwing
       return {

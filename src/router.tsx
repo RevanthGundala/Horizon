@@ -9,13 +9,9 @@ import App from './App';
 import Sidebar from './components/Sidebar';
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider, useAuth } from './contexts/auth-context';
-import Page from './components/Page';
 import Login from './components/Login';
+import Note from './components/Note';
 
-// Define search param interfaces
-interface CallbackSearchParams {
-  code: string;
-}
 
 const queryClient = new QueryClient();
 
@@ -51,11 +47,6 @@ export const indexRoute = createRoute({
   component: App,
 });
 
-export const pageRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/page/$pageId',
-  component: Page,
-});
 
 export const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -63,12 +54,18 @@ export const loginRoute = createRoute({
   component: Login,
 });
 
+export const noteRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/note/$noteId',
+  component: Note,
+});
+
 // Create the router
 export const router = createRouter({
   routeTree: rootRoute.addChildren([
     indexRoute,
-    pageRoute,
     loginRoute,
+    noteRoute,
   ]),
 });
 
