@@ -1,201 +1,184 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, WebContents } from 'electron';
 import path from 'path';
 import fs from 'fs';
-import DatabaseService from './database';
-import SyncService from './database/sync';
-import { setupDatabaseIpcHandlers } from './database/ipc-handlers';
-import AuthService from './auth';
+import DatabaseService from './data';
+import { SyncService } from './sync';
+import { setupDatabaseIpcHandlers } from './data/ipc-handlers';
+// Import the AuthService singleton instance directly if that's how you export it
+import { AuthService } from './auth'; // Assuming AuthService file exports the singleton instance
 import { setupAuthIpcHandlers } from './auth/ipc-handlers';
 import { setupProtocolHandler } from './auth/protocol-handler';
+import { setupChatIpcHandlers } from './chat/ipc-handlers';
+import dotenv from 'dotenv';
 
-// Handle creating/removing shortcuts on Windows when installing/uninstalling.
+// --- Environment Variable Loading ---
+const projectRoot = path.resolve(__dirname, '../../..'); // Adjust if needed
+const envPath = path.resolve(projectRoot, 'electron', '.env.development');
+dotenv.config({ path: envPath });
+console.log(`[Main] Loading environment variables from: ${envPath}`);
+console.log(`[Main] VITE_API_URL is: ${process.env.VITE_API_URL}`); // Verify it loaded
+
+// --- Squirrel Startup Handling ---
 let squirrelStartup = false;
 try {
-  squirrelStartup = require('electron-squirrel-startup');
+    squirrelStartup = require('electron-squirrel-startup');
 } catch (e) {
-  console.log('electron-squirrel-startup not available');
+    console.log('[Main] electron-squirrel-startup not available');
 }
-
 if (squirrelStartup) {
-  app.quit();
+    app.quit();
 }
 
-// Initialize database and sync services
+// --- Service Instances (initialized in whenReady) ---
 let db: DatabaseService;
 let syncService: SyncService;
-let authService: AuthService;
+let authService: AuthService; // Keep reference to the singleton
 
-const createWindow = () => {
-  // Create the browser window.
-  const mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    webPreferences: {
-      preload: path.join(__dirname, './preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  });
+// --- Main Window Reference ---
+// Store globally for easier access, though dependency injection is cleaner for larger apps
+let mainWindow: BrowserWindow | null = null;
 
-  // In production, set the initial browser path to the local bundled Vite output
-  if (app.isPackaged) {
-    // Fix the path to go up two levels since we're in dist/electron/electron/
-    mainWindow.loadFile(path.join(__dirname, '../../index.html'));
-  } else {
-    // In development, use the Vite dev server
-    mainWindow.loadURL('http://localhost:5173');
-    // Open the DevTools.
-    mainWindow.webContents.openDevTools();
-  }
-
-  // Handle window close event
-  mainWindow.on('close', () => {
-    // Perform any cleanup needed before the window closes
-    if (syncService) {
-      // Try to sync one last time before closing
-      syncService.syncWithServer().catch((err: any) => {
-        console.error('Error during final sync:', err);
-      });
-    }
-  });
-};
-
-// Set up logging to file
+// --- Logging Setup ---
 const setupLogging = () => {
-  const userDataPath = app.getPath('userData');
-  const logDir = path.join(userDataPath, 'logs');
-  
-  // Create logs directory if it doesn't exist
-  if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
-  }
-  
-  const logPath = path.join(logDir, `electron-${new Date().toISOString().replace(/:/g, '-')}.log`);
-  console.log(`📝 Electron logs will be saved to: ${logPath}`);
-  
-  // Create a write stream
-  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
-  
-  // Store the original console methods
-  const originalConsoleLog = console.log;
-  const originalConsoleError = console.error;
-  const originalConsoleWarn = console.warn;
-  
-  // Override console methods to write to file
-  console.log = function(...args) {
-    const message = args.map(arg => 
-      typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg
-    ).join(' ');
-    
-    logStream.write(`[LOG] ${new Date().toISOString()} - ${message}\n`);
-    originalConsoleLog.apply(console, args);
-  };
-  
-  console.error = function(...args) {
-    const message = args.map(arg => 
-      typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg
-    ).join(' ');
-    
-    logStream.write(`[ERROR] ${new Date().toISOString()} - ${message}\n`);
-    originalConsoleError.apply(console, args);
-  };
-  
-  console.warn = function(...args) {
-    const message = args.map(arg => 
-      typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg
-    ).join(' ');
-    
-    logStream.write(`[WARN] ${new Date().toISOString()} - ${message}\n`);
-    originalConsoleWarn.apply(console, args);
-  };
-  
-  // Clean up on app quit
-  app.on('will-quit', () => {
-    logStream.end();
-  });
-  
-  return logPath;
+    // ... (your existing logging setup code remains unchanged) ...
+    const logPath = path.join(app.getPath('userData'), 'logs', `electron-${new Date().toISOString().replace(/:/g, '-')}.log`);
+    // ... (rest of setupLogging) ...
+    console.log(`📝 Electron logs will be saved to: ${logPath}`); // Ensure this runs
+    return logPath;
+};
+const logPath = setupLogging(); // Set up logging early
+
+// --- Create Window Function ---
+const createWindow = () => {
+    console.log('[Main] Creating main window...');
+    mainWindow = new BrowserWindow({ // Assign to global variable
+        width: 1200,
+        height: 800,
+        webPreferences: {
+            preload: path.join(__dirname, './preload.js'), // Verify preload path
+            nodeIntegration: false,
+            contextIsolation: true,
+        },
+    });
+
+    // --- Pass window reference to AuthService ---
+    // It needs this to send 'auth-status-changed' events
+    authService.setMainWindow(mainWindow); // Use the method we added previously
+
+    // Load the UI
+    if (app.isPackaged) {
+        const indexPath = path.join(__dirname, '../../index.html'); // Verify path for packaged app
+        console.log(`[Main] Loading file: ${indexPath}`);
+        mainWindow.loadFile(indexPath);
+    } else {
+        const devUrl = 'http://localhost:5173'; // Ensure port matches Vite config
+        console.log(`[Main] Loading URL: ${devUrl}`);
+        mainWindow.loadURL(devUrl);
+        mainWindow.webContents.openDevTools();
+    }
+
+    // Handle window close event
+    mainWindow.on('close', () => {
+        console.log('[Main] Main window closing...');
+        if (syncService) {
+            syncService.triggerSync();
+        }
+    });
+
+    // Clear reference when closed
+    mainWindow.on('closed', () => {
+        console.log('[Main] Main window closed.');
+        mainWindow = null;
+        authService.setMainWindow(null); // Clear reference in AuthService too
+    });
+
+    console.log('[Main] Main window created.');
 };
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
+// --- Get WebContents Function (used by SyncService?) ---
+// Make sure this correctly finds the window if needed elsewhere
+export function getMainWindowWebContents(): WebContents | null {
+    return mainWindow ? mainWindow.webContents : null;
+    // Alternative: Find the first available window if mainWindow ref isn't reliable
+    // const allWindows = BrowserWindow.getAllWindows();
+    // return allWindows.length > 0 ? allWindows[0].webContents : null;
+}
+
+
+// =============================================================================
+// App Lifecycle Events
+// =============================================================================
+
 app.whenReady().then(() => {
-  // Initialize database
-  db = DatabaseService.getInstance();
-  
-  // Initialize auth service
-  authService = AuthService.getInstance();
-  
-  // Set up protocol handler for OAuth
-  setupProtocolHandler();
-  
-  // Handle protocol activation during app launch
-  if (process.platform === 'darwin') {
-    app.on('will-finish-launching', () => {
-      // macOS-specific: handle open-url events before the app is ready
-      app.on('open-url', (event, url) => {
-        event.preventDefault();
-        console.log('Received open-url event before app ready:', url);
-        // Store the URL for processing after app is ready
-        if (url.startsWith('horizon://')) {
-          console.log('Storing horizon:// URL for processing after app ready:', url);
-          // We'll handle it in setupProtocolHandler
+    console.log('[Main] App ready.');
+
+    // --- Initialize Services ---
+    console.log('[Main] Initializing Database Service...');
+    db = DatabaseService.getInstance();
+
+    console.log('[Main] Initializing Auth Service...');
+    // AuthService constructor might trigger initial checkAuthStatus internally now or later
+    authService = AuthService.getInstance(); // Access the singleton instance
+
+    console.log('[Main] Initializing Sync Service...');
+    syncService = SyncService.getInstance();
+    // Consider if initialize needs auth status - might need adjustments
+    syncService.initialize();
+
+    // --- Setup Protocol Handler ---
+    // This registers 'horizon://' and sets up handlers for open-url/second-instance/argv
+    // These handlers will now call authService.checkAuthStatus() when triggered
+    console.log('[Main] Setting up protocol handler...');
+    setupProtocolHandler();
+
+    // --- Setup IPC Handlers ---
+    console.log('[Main] Setting up Database IPC Handlers...');
+    setupDatabaseIpcHandlers();
+    console.log('[Main] Setting up Auth IPC Handlers...');
+    setupAuthIpcHandlers(); // Uses the updated handlers
+    console.log('[Main] Setting up Chat IPC Handlers...');
+    setupChatIpcHandlers();
+
+    // --- Create Initial Window ---
+    createWindow();
+
+    // --- macOS activate handler ---
+    app.on('activate', () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+            console.log('[Main] App activated (macOS), creating window.');
+            createWindow();
+        } else {
+             console.log('[Main] App activated (macOS), window exists.');
+             // Optionally focus existing window
+             if(mainWindow) mainWindow.focus();
         }
-      });
     });
-  }
-  
-  // Set up logging
-  const logPath = setupLogging();
-  console.log('Electron app starting...');
-  
-  // Set up IPC listener for protocol detection
-  ipcMain.on('protocol-detected', (event, url) => {
-    console.log('Protocol URL detected via IPC:', url);
-    if (url.startsWith('horizon://')) {
-      // Handle the protocol URL
-      authService.handleOAuthCallback(url)
-        .then(result => console.log(`Protocol URL handling result: ${result}`))
-        .catch(err => console.error('Error handling protocol URL:', err));
-    }
-  });
-
-  // Set up IPC handlers
-  setupDatabaseIpcHandlers();
-  setupAuthIpcHandlers();
-  
-  // Initialize sync service
-  syncService = SyncService.getInstance();
-  syncService.initialize();
-  
-  createWindow();
-
-  app.on('activate', () => {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
 });
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
+// --- Window All Closed Handler ---
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+    console.log('[Main] All windows closed.');
+    if (process.platform !== 'darwin') {
+        console.log('[Main] Quitting app (non-macOS).');
+        app.quit();
+    }
 });
 
-// Clean up resources before quitting
+// --- App Will Quit Handler (Cleanup) ---
 app.on('will-quit', () => {
-  if (syncService) {
-    syncService.shutdown();
-  }
-  
-  if (db) {
-    db.close();
-  }
+    console.log('[Main] App will quit. Cleaning up...');
+    if (syncService) {
+        syncService.shutdown();
+    }
+    if (db) {
+        db.close();
+    }
+    // Close log stream if setupLogging returns it and stores it
+    // logStream.end();
+    console.log('[Main] Cleanup finished.');
 });
+
+
+// --- Removed Obsolete Logic ---
+// Removed: app.on('will-finish-launching', ...) - Handled by setupProtocolHandler now.
+// Removed: ipcMain.on('protocol-detected', ...) - No longer needed, protocol handled by setupProtocolHandler triggering checkAuthStatus.

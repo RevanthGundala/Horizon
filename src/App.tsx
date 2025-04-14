@@ -8,11 +8,11 @@ import ChatInterface from './components/ChatInterface';
 import CardGrid, { Card } from './components/CardGrid';
 import { useNavigate } from '@tanstack/react-router';
 import './styles/SyncStatus.css';
-import { setupNetworkDetection } from './utils/services/db';
+import { setupNetworkDetection } from './services/DataService';
 import { useAuth } from './contexts/auth-context';
 import { useWorkspaces, useCreateWorkspace, useWorkspaceNotes, useCreateNote } from './hooks/useWorkspaces';
 import { useQueryClient } from '@tanstack/react-query';
-import { Note } from './utils/types/index';
+import { Note } from '../types/index';
 import Onboarding from './components/Onboarding';
 
 function App() {

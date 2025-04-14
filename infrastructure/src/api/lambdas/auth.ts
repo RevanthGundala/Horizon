@@ -4,208 +4,139 @@ import { Client } from "pg";
 import { parseCookies, createHeaders, handleOptions, setCookie, isAuthSuccess } from "../utils/middleware";
 import { AuthenticateWithSessionCookieSuccessResponse, WorkOS } from "@workos-inc/node";
 
-const loginHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  // Handle OPTIONS requests for CORS preflight
+// --- Unified Login Initiator ---
+const loginHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event) => {
   if (event.httpMethod === "OPTIONS") {
-    return handleOptions(event);
+      return handleOptions(event); // Handles CORS Preflight
   }
-  
+
   const clientId = process.env.WORKOS_CLIENT_ID || "";
-  
+  const workosApiKey = process.env.WORKOS_API_KEY || "";
+  const frontendUrl = process.env.FRONTEND_URL || ""; // Your WEBSITE base URL (e.g., https://your-website.com)
+
+  // --- Get the desired FINAL web callback URL from query param ---
+  // This is sent by your website's /auth/initiate page
+  const from = event.queryStringParameters?.from;
+  const state = encodeURIComponent(JSON.stringify({ redirect: from }));
+
+  // --- Check if finalRedirectUri is registered in WorkOS ---
+  // You MUST add finalRedirectUri (both electron and standard versions) to your WorkOS allowed list!
+
+  if (!clientId || !workosApiKey || !frontendUrl) {
+      console.error("WorkOS config missing in environment variables.");
+      return { statusCode: 500, headers: createHeaders(), body: JSON.stringify({ error: "Server configuration error" }) };
+  }
+
   try {
-    const workos = new WorkOS(process.env.WORKOS_API_KEY || "", {
-      clientId,
-    });
-    
-    // Create the authorization URL
-    const authorizationUrl = workos.userManagement.getAuthorizationUrl({
-      // Specify that we'd like AuthKit to handle the authentication flow
-      provider: 'authkit',
-      // Use the exact redirect URI that's registered with WorkOS
-      // This must match what's in your WorkOS dashboard exactly
-      redirectUri: "horizon://api/auth/callback",
-      clientId,
-    });
-    
-    return {
-      statusCode: 302,
-      headers: {
-        "Location": authorizationUrl,
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: ""
-    }; 
+      const workos = new WorkOS(workosApiKey, { clientId });
+
+      const redirectUri = from === "electron" ? `${frontendUrl}/loginDeepUrl` : `${process.env.API_URL}/api/auth/callback`;
+      console.log(`Redirecting to WorkOS Auth URL with callback to: ${redirectUri}`);
+
+      const authorizationUrl = workos.userManagement.getAuthorizationUrl({
+          provider: 'authkit',
+          redirectUri, // Use the validated website callback URL
+          clientId,
+          // Consider adding a 'state' parameter for CSRF protection during OAuth flow
+          state,
+        });
+
+      console.log(`Redirecting to WorkOS Auth URL with callback to: ${authorizationUrl}`);
+
+      // Return 302 Redirect to WorkOS
+      return {
+          statusCode: 302,
+          headers: {
+              "Location": authorizationUrl,
+              // CORS headers might not be strictly needed on a 302, but can be included via createHeaders if desired
+              ...createHeaders(event.headers.origin || event.headers.Origin), // Add CORS if needed
+          },
+          body: ""
+      };
   } catch (error) {
-    console.error('Error generating authorization URL:', error);
-    return {
-      statusCode: 500,
-      headers: createHeaders(),
-      body: JSON.stringify({ 
-        error: 'Failed to generate authorization URL',
-        details: error instanceof Error ? error.message : String(error)
-      }),
-    };
+      console.error('Error generating WorkOS authorization URL:', error);
+      return {
+          statusCode: 500,
+          headers: createHeaders(event.headers.origin || event.headers.Origin), // Include CORS
+          body: JSON.stringify({ error: 'Failed to initiate login', details: error instanceof Error ? error.message : String(error) }),
+      };
   }
 };
 
-const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  // Handle OPTIONS requests for CORS preflight
+
+// --- Refactored Callback Handler ---
+const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event) => {
   if (event.httpMethod === "OPTIONS") {
-    return handleOptions(event);
+      return handleOptions(event); // Handles CORS Preflight
   }
 
-  // Get the origin from the request headers
-  const origin = event.headers.origin || event.headers.Origin;
   const code = event.queryStringParameters?.code;
+  const state = JSON.parse(decodeURIComponent(event.queryStringParameters?.state || "{}"));
   const clientId = process.env.WORKOS_CLIENT_ID || "";
-  const redirectUri = event.queryStringParameters?.redirect_uri;
-  
+  const workosApiKey = process.env.WORKOS_API_KEY || "";
+  const cookiePassword = process.env.WORKOS_COOKIE_PASSWORD || "";
+  const dbUrl = process.env.DB_URL || "";
+  const origin = event.headers.origin || event.headers.Origin; // For CORS headers
+
   if (!code) {
-    return {
-      statusCode: 400,
-      headers: createHeaders(origin), 
-      body: JSON.stringify({ error: "No code provided" }),
-    };
+      console.error("Callback Error: Missing code query parameter.");
+      return { statusCode: 400, headers: createHeaders(origin), body: JSON.stringify({ error: "Missing required parameters" }) };
   }
 
-  try {
-    const workos = new WorkOS(process.env.WORKOS_API_KEY || "", {
-      clientId,
-    }); 
-    
-    const authOptions: any = {
-      code,
-      clientId,
-      session: {
-        sealSession: true,
-        cookiePassword: process.env.WORKOS_COOKIE_PASSWORD || "",
-      }
-    };
-    
-    // Always include the redirectUri if provided - this is required for the WorkOS flow
-    if (redirectUri) {
-      authOptions.redirectUri = redirectUri;
-    } else {
-      // Default redirect URI for web browser flow
-      authOptions.redirectUri = `${process.env.API_URL}/api/auth/callback`;
-    }
-    
-    const { user, sealedSession } = await workos.userManagement.authenticateWithCode(authOptions);
-    
-    console.log('🔍 AUTH CALLBACK - Authentication successful, user:', JSON.stringify({
-      id: user.id,
-      email: user.email,
-      hasSession: !!sealedSession
-    }));
-    
-    // Connect to the database
-    const client = new Client({
-      connectionString: process.env.DB_URL,
-      ssl: {
-        rejectUnauthorized: false
-      }
-    });
-
-    await client.connect();
-
-    try {
-      // Check if user already exists by email
-      const existingUser = await client.query(
-        "SELECT * FROM users WHERE email = $1",
-        [user.email]
-      );
-      
-      if (existingUser.rows.length === 0) {
-        console.log('🔍 AUTH CALLBACK - Creating new user in database:', user.email);
-        // Insert the user with the WorkOS ID
-        await client.query(
-          "INSERT INTO users (id, email) VALUES ($1, $2)",
-          [user.id, user.email]
-        );
-      } else {
-        console.log('🔍 AUTH CALLBACK - User already exists in database:', user.email);
-      }
-    } finally {
-      // Always close the database connection
-      await client.end();
-    }
-
-    return setCookie(sealedSession, origin, user, event, code); 
-  } catch (error) {
-    console.error('Authentication error:', error);
-    // Get the origin here to avoid closure issues
-    const origin = event.headers.origin || event.headers.Origin;
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
-    
-    return {
-      statusCode: 302,
-      headers: {
-        "Location": `${frontendUrl}/login?error=authentication_failed`,
-        "Access-Control-Allow-Origin": origin || frontendUrl,
-        "Access-Control-Allow-Credentials": "true",
-      },
-      body: "",
-    };
+  if (!clientId || !workosApiKey || !cookiePassword || !dbUrl) {
+      console.error("WorkOS/DB config missing in environment variables for callback.");
+      return { statusCode: 500, headers: createHeaders(origin), body: JSON.stringify({ error: "Server configuration error" }) };
   }
-};
 
-const meHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  // This handler is wrapped by withAuth middleware, so if we get here, the user is authenticated
+
   try {
-    // Get the session cookie
-    const cookies = parseCookies(event.headers.cookie || event.headers.Cookie);
-    const sessionData = cookies["wos-session"] || "";
+      const workos = new WorkOS(workosApiKey, { clientId });
 
-    if (!sessionData) {
-      return {
-        statusCode: 401,
-        headers: createHeaders(event.headers.origin || event.headers.Origin),
-        body: JSON.stringify({ 
-          authenticated: false,
-          error: "No session cookie found"
-        }),
-      };
-    }
+      const { user, sealedSession } = await workos.userManagement.authenticateWithCode({
+        code,
+        clientId,
+        session: { 
+          sealSession: true,
+          cookiePassword: cookiePassword,
+        },
+      });
 
-    const workos = new WorkOS(process.env.WORKOS_API_KEY || "", {
-      clientId: process.env.WORKOS_CLIENT_ID || "",
-    });
+      console.log(`🔍 AUTH CALLBACK - Success for user: ${user.id} (${user.email})`);
 
-    const session = workos.userManagement.loadSealedSession({
-      sessionData,
-      cookiePassword: process.env.WORKOS_COOKIE_PASSWORD || "",
-    });
-    
-    const authResult = await session.authenticate();
-    
-    if (!authResult || !isAuthSuccess(authResult)) {
-      return {
-        statusCode: 401,
-        headers: createHeaders(event.headers.origin || event.headers.Origin),
-        body: JSON.stringify({ 
-          authenticated: false,
-          error: "Invalid session"
-        }),
-      };
-    }
-    
-    return {
-      statusCode: 200,
-      headers: createHeaders(event.headers.origin || event.headers.Origin),
-      body: JSON.stringify({ 
-        userId: (authResult as AuthenticateWithSessionCookieSuccessResponse).user.id
-      }),
-    };
+      // --- Database Logic (Keep your existing logic) ---
+      const client = new Client({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } });
+      await client.connect();
+      try {
+           const existingUser = await client.query("SELECT * FROM users WHERE email = $1", [user.email]);
+           if (existingUser.rows.length === 0) {
+               console.log('Creating new user in DB:', user.email);
+               await client.query("INSERT INTO users (id, email) VALUES ($1, $2)", [user.id, user.email]);
+           } else {
+               console.log('User already exists in DB:', user.email);
+           }
+      } finally {
+          await client.end();
+      }
+      // --- End Database Logic ---
+
+
+      return setCookie({
+        sealedSession,
+        origin,
+        user,
+        event,
+        code,
+        state,
+      });
+
   } catch (error) {
-    console.error("Error in me handler:", error);
-    return {
-      statusCode: 500,
-      headers: createHeaders(event.headers.origin || event.headers.Origin),
-      body: JSON.stringify({ 
-        authenticated: false,
-        error: "Server error"
-      }),
-    };
+      console.error('Authentication callback error:', error);
+      // Return JSON error to the calling web page
+      return {
+          statusCode: 500, // Or 400/401 depending on the error type
+          headers: createHeaders(origin), // Include CORS
+          body: JSON.stringify({ success: false, error: 'Authentication failed', details: error instanceof Error ? error.message : String(error) })
+      };
   }
 };
 
@@ -250,5 +181,4 @@ export const authApi = {
   login: loginHandler,
   callback: callbackHandler,
   logout: logoutHandler,
-  me: meHandler,
 };

@@ -5,6 +5,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('electron', {
+  isElectron: true,
   ipcRenderer: {
     invoke: (channel: string, ...args: any[]) => {
       // whitelist channels
@@ -36,14 +37,20 @@ contextBridge.exposeInMainWorld('electron', {
         'sync:set-online-status',
         'auth:login',
         'auth:logout',
-        'auth:is-authenticated',
-        'auth:get-user-id',
+        'auth:check-status',
+        'auth:get-status',
         'sync:get-auth-cookie',
         'db:user-exists',
         'sync:user',
+        'sync:set-online-status',
         'auth-success',
-        // Chat operations
-        'chat:send-message'
+       // *** ADD CHAT CHANNELS ***
+       'chat:chunk',
+       'chat:end',
+       'chat:error',
+       'chat:new-assistant-message',
+       'chat:send-user-message',
+       'chat:get-messages'
       ];
       if (validChannels.includes(channel)) {
         return ipcRenderer.invoke(channel, ...args);
@@ -61,14 +68,14 @@ contextBridge.exposeInMainWorld('electron', {
       }
     },
     receive: (channel: string, func: (...args: any[]) => void) => {
-      const validChannels = ['fromMain', 'auth:status-changed'];
+      const validChannels = ['fromMain', 'auth:get-status', 'auth:status-changed', 'auth-success', 'chat:chunk', 'chat:end', 'chat:error', 'chat:new-assistant-message', 'chat:send-user-message', 'chat:get-messages', 'sync:set-online-status'];
       if (validChannels.includes(channel)) {
         // Deliberately strip event as it includes `sender` 
         ipcRenderer.on(channel, (event, ...args) => func(...args));
       }
     },
     on: (channel: string, func: (...args: any[]) => void) => {
-      const validChannels = ['fromMain', 'auth:status-changed', 'auth-success']; // ADD 'auth-success'
+      const validChannels = ['fromMain', 'auth:get-status', 'auth:status-changed', 'auth-success', 'chat:chunk', 'chat:end', 'chat:error', 'chat:new-assistant-message', 'chat:send-user-message', 'chat:get-messages', 'sync:set-online-status']; // ADD 'auth-success'
       if (validChannels.includes(channel)) {
         // Deliberately strip event as it includes `sender` (avoid exposing too much)
         const saferListener = (event: any, ...args: any[]) => func(...args);
@@ -80,18 +87,20 @@ contextBridge.exposeInMainWorld('electron', {
       } else {
         console.error(`[Preload On] Blocked channel: ${channel}`);
         // Return a no-op cleanup function for disallowed channels
-        return () => {};
+        return () => {ipcRenderer.removeListener(channel, func);};
       }
     },
     off: (channel: string, func: (...args: any[]) => void) => {
-      const validChannels = ['fromMain', 'auth:status-changed', 'auth-success']; // ADD 'auth-success'
+      const validChannels = ['fromMain', 'auth:status-changed', 'auth-success', 'chat:chunk', 'chat:end', 'chat:error', 'chat:new-assistant-message', 'chat:send-user-message', 'chat:get-messages', 'sync:set-online-status']; // ADD 'auth-success'
       if (validChannels.includes(channel)) {
         // Same as removeListener but with a different name
         ipcRenderer.removeListener(channel, (event: any, ...args: any[]) => func(...args));
+      } else {
+        console.error(`[Preload Off] Blocked channel: ${channel}`);
       }
     },
     removeListener: (channel: string, listener: (...args: any[]) => void) => {
-      const validChannels = ['fromMain', 'auth:status-changed', 'auth-success']; // ADD 'auth-success'
+      const validChannels = ['fromMain', 'auth:status-changed', 'auth-success', 'chat:chunk', 'chat:end', 'chat:error', 'chat:new-assistant-message', 'chat:send-user-message', 'chat:get-messages', 'sync:set-online-status']; // ADD 'auth-success'
       if (validChannels.includes(channel)) {
         ipcRenderer.removeListener(channel, listener);
       } else {

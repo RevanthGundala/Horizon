@@ -33,7 +33,7 @@ echo -e "${GREEN}TypeScript code built successfully.${NC}"
 echo -e "${BLUE}Step 3: Deploying infrastructure...${NC}"
 
 # Check if the TypeScript compiled file exists in dist
-COMPILED_FILE="dist/infrastructure/src/index.js"
+COMPILED_FILE="dist/index.js"
 if [ ! -f "$COMPILED_FILE" ]; then
   echo -e "${RED}${COMPILED_FILE} not found. Running build again...${NC}"
   bun run clean && bun run build

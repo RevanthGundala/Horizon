@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, UseQueryOptions } from '@tanstack/react-query';
-import { dbNotes, dbSync } from '../utils/services/db';
-import { Note, Block } from '../utils/types';
+import { dbNotes, dbSync } from '../services/DataService';
+import { Note, Block } from '../../types';
 
 // Query keys
 export const notesKeys = {

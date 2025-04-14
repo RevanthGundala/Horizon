@@ -20,6 +20,8 @@
   "license": "ISC",
   "description": "Electron.js application with Vite, React, and TypeScript",
   "devDependencies": {
+    "@tanstack/react-router-devtools": "^1.116.0",
+    "@tanstack/router-plugin": "^1.116.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/cookie": "^0.6.0",
     "@types/lodash": "^4.17.16",
@@ -43,7 +45,7 @@
     "@blocknote/mantine": "^0.27.0",
     "@blocknote/react": "^0.27.0",
     "@tanstack/react-query": "^5.71.10",
-    "@tanstack/react-router": "^1.114.34",
+    "@tanstack/react-router": "^1.116.0",
     "@tanstack/react-store": "^0.7.0",
     "@tanstack/store": "^0.7.0",
     "@types/uuid": "^10.0.0",

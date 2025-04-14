@@ -1,5 +1,4 @@
-import {isElectron, ipcCall} from './helpers';
-
+import { isElectron, ipcCall } from '../utils/helpers';
 // Auth service interface
 export interface AuthService {
   login(): Promise<{ success: boolean; error?: string }>;
@@ -13,7 +12,7 @@ export const auth: AuthService = {
   login: async () => {
     if (!isElectron()) {
       console.log('Running in browser mode - redirecting to login page');
-      window.location.href = `${import.meta.env.VITE_API_URL}/api/auth/login`;
+      window.location.href = `${import.meta.env.VITE_API_URL}/api/auth/login?from=web`;
       return { success: true };
     }
     
@@ -50,7 +49,7 @@ export const auth: AuthService = {
     }
     
     try {
-      return await ipcCall<boolean>('auth:is-authenticated');
+      return await ipcCall<boolean>('auth:check-status');
     } catch (error) {
       console.error('Error checking authentication status:', error);
       return false;

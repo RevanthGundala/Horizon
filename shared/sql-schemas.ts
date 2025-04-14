@@ -72,6 +72,34 @@ export const SQL_SCHEMAS = {
         synced_at TEXT,
         error_message TEXT
       );
+    `,
+    CHAT_MESSAGES: `
+      CREATE TABLE IF NOT EXISTS chat_messages (
+          id TEXT PRIMARY KEY,
+          -- Link to a chat session/thread if you have that concept, otherwise maybe link to a workspace/note?
+          -- For simplicity, let's assume a 'thread_id' exists. Add a threads table if needed.
+          thread_id TEXT NOT NULL DEFAULT 'default_thread',
+          role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), -- Who sent the message
+          content TEXT NOT NULL, -- The message text
+          timestamp TEXT NOT NULL, -- When the message was created/received (ISO 8601 format)
+          user_id TEXT, -- Optional: Which user sent/received this
+
+          -- Fields for Hybrid Sync & Offline First
+          sync_status TEXT NOT NULL DEFAULT 'local' CHECK(sync_status IN ('local', 'sending_stream', 'sending_batch', 'synced', 'error')), -- Sync state
+          server_message_id TEXT UNIQUE DEFAULT NULL, -- ID from the backend AI/service (optional)
+          error_message TEXT DEFAULT NULL, -- Store sync error details
+          retry_count INTEGER NOT NULL DEFAULT 0, -- Track background sync retries
+          related_user_message_id TEXT DEFAULT NULL, -- Link assistant response to the user message ID that triggered it
+
+          -- Optional Foreign Key (adjust based on your actual thread table)
+          -- FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+
+      -- Index for faster querying of messages by thread
+      CREATE INDEX IF NOT EXISTS chat_messages_thread_timestamp_idx ON chat_messages (thread_id, timestamp);
+      -- Index for background sync process
+      CREATE INDEX IF NOT EXISTS chat_messages_sync_status_idx ON chat_messages (sync_status, retry_count, timestamp);
     `
   };
 

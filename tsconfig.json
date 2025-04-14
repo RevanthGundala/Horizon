@@ -25,6 +25,6 @@
       "./src/types"
     ]
   },
-  "include": ["src", "types/electron.d.ts"],
+  "include": ["src", "types/electron.d.ts", "src/services", "types"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

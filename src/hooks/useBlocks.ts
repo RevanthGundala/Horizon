@@ -1,9 +1,9 @@
 import { useQuery, useMutation, useQueryClient, UseQueryOptions } from '@tanstack/react-query';
 import { Store, useStore } from '@tanstack/react-store';
-import { useEffect, useCallback } from 'react';
-import { dbBlocks } from '../utils/services/db';
+import { useEffect } from 'react';
+import { dbBlocks } from '../services/DataService';
 import { v4 as uuidv4 } from 'uuid';
-import { Block } from '@/utils/types';
+import { Block } from '../../types';
 
 // Define the store state
 interface BlocksState {

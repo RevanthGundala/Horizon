@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import '../styles/Login.css';
-import { getUrl } from '../utils/api';
 import { useNavigate } from '@tanstack/react-router';
+import { getUrl } from '@/utils/helpers';
+import { auth } from '@/services';
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
@@ -86,11 +87,11 @@ const Login: React.FC = () => {
                 className="login-button"
                 onClick={() => {
                   console.log('Invoking Electron login');
-                  window.electron.ipcRenderer.invoke('auth:login')
+                 auth.login()
                     .then((result) => {
                       console.log('Login invoked successfully', result);
                       // Explicitly check authentication status after login
-                      return window.electron.ipcRenderer.invoke('auth:is-authenticated');
+                      return auth.isAuthenticated();
                     })
                     .then((isAuthenticated) => {
                       console.log('Authentication status after login:', isAuthenticated);
@@ -101,7 +102,7 @@ const Login: React.FC = () => {
                     .catch(error => {
                       console.error('Error invoking login:', error);
                       // Attempt to get more details about the authentication failure
-                      window.electron.ipcRenderer.invoke('auth:get-user-id')
+                      auth.getUserId()
                         .then(userId => console.log('User ID after failed login:', userId))
                         .catch(idError => console.error('Error getting user ID:', idError));
                     });

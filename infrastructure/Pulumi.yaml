@@ -1,4 +1,4 @@
 name: horizon-infrastructure
 runtime: nodejs
 description: Infrastructure as code for Horizon application using AWS Lambda functions
-main: ./dist/infrastructure/src/index.js
+main: ./dist/index.js

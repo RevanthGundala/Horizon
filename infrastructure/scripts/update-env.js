@@ -1,105 +1,85 @@
 const fs = require('fs');
-const { execSync } = require('child_process');
 const path = require('path');
+const { execSync } = require('child_process');
 
 // Get app environment from Pulumi config or default to 'development'
 let appEnv = 'development';
 try {
   appEnv = execSync('pulumi config get horizon-infrastructure:APP_ENV', { encoding: 'utf8' }).trim();
-  console.log(`Using environment: ${appEnv}`);
-} catch (error) {
-  console.log(`No APP_ENV found in Pulumi config, defaulting to ${appEnv}`);
-}
+console.log(`Using environment: ${appEnv}`);
 
-// Path to .env file (one directory up from infrastructure)
-const rootDir = path.join(__dirname, '..');
-const envFilePath = path.join(rootDir, `.env.${appEnv}`);
+// Path to project root
+const projectRoot = path.join(__dirname, '../..');
+
+// Paths for both .env files
+const viteEnvFilePath = path.join(projectRoot, `.env.${appEnv}`);
+const electronEnvFilePath = path.join(projectRoot, 'electron', `.env.${appEnv}`);
+
+// Mapping for output keys to environment variable names
+const outputKeyMapping = {
+  apiGatewayEndpoint: 'API_URL',
+  chatFunctionUrlEndpoint: 'CHAT_URL'
+};
 
 // List of public config keys that should be exposed to the frontend with VITE_ prefix
 const publicConfigKeys = [
   'API_URL',
-  'AUTH_CALLBACK_URL',
+  'CHAT_URL', 
   'WORKOS_CLIENT_ID'
 ];
 
-try {
-  // Run pulumi stack output to get all outputs
-  const outputs = {};
-  
-  // Get API endpoint
+// Collect environment outputs
+const outputs = {};
+
+// Function to write environment file
+const writeEnvFile = (filePath, isVite = false) => {
+  const envContent = Object.entries(outputs)
+    .map(([key, value]) => {
+      // If it's the Vite file, prepend VITE_ to specified keys
+      const envKey = isVite && publicConfigKeys.includes(key) 
+        ? `VITE_${key}` 
+        : key;
+      return `${envKey}="${value}"`;
+    })
+    .join('\n');
+
   try {
-    outputs.API_URL = execSync('pulumi stack output apiEndpoint', { encoding: 'utf8' }).trim();
-    console.log(`Retrieved API endpoint: ${outputs.API_URL}`);
-    
-    // Remove trailing slash if present to avoid double slash in URLs
-    outputs.API_URL = outputs.API_URL.endsWith('/') 
-      ? outputs.API_URL.slice(0, -1) 
-      : outputs.API_URL;
+    fs.writeFileSync(filePath, envContent);
+    console.log(`Updated ${path.basename(filePath)} file`);
   } catch (error) {
-    console.log('API endpoint not found in Pulumi outputs');
+    console.error(`Error writing to ${filePath}:`, error);
   }
-  
-  // Get other outputs from Pulumi
+};
+
+
+  // Get API endpoint
+  outputs[outputKeyMapping.apiGatewayEndpoint] = execSync('pulumi stack output apiGatewayEndpoint', { encoding: 'utf8' }).trim();
+  console.log(`Retrieved API endpoint: ${outputs[outputKeyMapping.apiGatewayEndpoint]}`);
+
+  // Get Chat Function URL endpoint
+  outputs[outputKeyMapping.chatFunctionUrlEndpoint] = execSync('pulumi stack output chatFunctionUrlEndpoint', { encoding: 'utf8' }).trim();
+  console.log(`Retrieved Chat Function URL: ${outputs[outputKeyMapping.chatFunctionUrlEndpoint]}`);
+
+  // Get other Pulumi config values
   for (const key of publicConfigKeys) {
-    if (key !== 'API_URL') { // Already handled above
+    if (key !== 'API_URL' && key !== 'CHAT_URL') {
       try {
         const value = execSync(`pulumi config get horizon-infrastructure:${key}`, { encoding: 'utf8' }).trim();
         outputs[key] = value;
         console.log(`Retrieved ${key}: ${value}`);
-      } catch (error) {
+      } catch (configError) {
         console.log(`${key} not found in Pulumi config`);
       }
     }
   }
-  
-  // Create or update the environment file
-  let envContent = '';
-  try {
-    // Try to read existing file
-    envContent = fs.readFileSync(envFilePath, 'utf8');
-    console.log(`Existing .env.${appEnv} file found, updating...`);
-  } catch (err) {
-    console.log(`No existing .env.${appEnv} file found, creating a new one`);
-  }
-  
-  // Update environment variables
-  for (const [key, value] of Object.entries(outputs)) {
-    if (!value) continue;
-    
-    // Add VITE_ prefix for frontend variables
-    const envKey = `VITE_${key}`;
-    const regex = new RegExp(`${envKey}=.*`);
-    const newEnvVar = `${envKey}="${value}"`;
-    
-    if (regex.test(envContent)) {
-      // Replace existing entry
-      envContent = envContent.replace(regex, newEnvVar);
-    } else {
-      // Add new entry
-      envContent += envContent ? `\n${newEnvVar}` : newEnvVar;
-    }
-    
-    console.log(`Updated ${envKey} with value: ${value}`);
-  }
-  
-  // Write back to .env file
-  fs.writeFileSync(envFilePath, envContent);
-  console.log(`Updated .env.${appEnv} file with ${Object.keys(outputs).length} variables`);
-  
-  // Also update Pulumi configuration for any values that came from outputs
-  console.log('Updating Pulumi configuration...');
-  for (const [key, value] of Object.entries(outputs)) {
-    if (!value) continue;
-    
-    // Update in Pulumi config
-    execSync(`pulumi config set horizon-infrastructure:${key} ${value}`, { 
-      stdio: 'inherit' 
-    });
-  }
-  
-  
+
+  // Write both environment files
+  writeEnvFile(viteEnvFilePath, true);   // Vite file with VITE_ prefix
+  writeEnvFile(electronEnvFilePath);     // Electron file without prefix
+
   console.log('Environment update complete!');
 } catch (error) {
   console.error('Error updating environment variables:', error);
   process.exit(1);
 }
+

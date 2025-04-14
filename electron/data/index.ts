@@ -2,10 +2,8 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { app } from 'electron';
 import fs from 'fs';
-import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { SQL_SCHEMAS } from '../../shared/sql-schemas';
-import AuthService from 'auth';
 
 // Configuration
 export interface DatabaseConfig {
@@ -122,6 +120,7 @@ class DatabaseService {
     this.db.exec(SQL_SCHEMAS.BLOCKS);
     this.db.exec(SQL_SCHEMAS.SYNC_LOG);
     this.db.exec(SQL_SCHEMAS.USERS);
+    this.db.exec(SQL_SCHEMAS.CHAT_MESSAGES);
   }
 
   public userExists(userId: string | null | undefined): boolean {
@@ -439,6 +438,12 @@ class DatabaseService {
     console.log(`🔶 [ELECTRON DB] Found ${blocks.length} blocks across ${noteIds.length} notes in workspace ${workspaceId}`);
     
     return blocks;
+  }
+
+  public getBlocksForNotes(noteIds: string[]): Block[] {
+    const placeholders = noteIds.map(() => '?').join(',');
+    const stmt = this.db.prepare(`SELECT * FROM blocks WHERE note_id IN (${placeholders}) ORDER BY note_id, order_index ASC`);
+    return stmt.all(...noteIds) as Block[];
   }
 
   public getBlock(id: string): Block | undefined {
@@ -978,27 +983,19 @@ class DatabaseService {
     this.db.close();
   }
 
-  public upsertUserFromServer(userData: { 
-    id: string, 
-    email: string,
-    created_at?: string,
-    updated_at?: string
-  }): void {
-    const now = new Date().toISOString();
-    
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO users 
-      (id, email, created_at, updated_at) 
-      VALUES (?, ?, ?, ?)
-    `);
-    
-    stmt.run(
-      userData.id, 
-      userData.email, 
-      userData.created_at || now,
-      userData.updated_at || now
-    );
-  }
+      // Add upsertUserFromServer if it doesn't exist from previous steps
+      upsertUserFromServer(user: any): void {
+        console.log(`[DB upsertUserFromServer] Upserting user ${user.id}`);
+         const stmt = this.db.prepare(`
+             INSERT INTO users (id, email /*, other fields... */)
+             VALUES (@id, @email /*, ... */)
+             ON CONFLICT(id) DO UPDATE SET
+                 email = excluded.email
+                 /*, update other fields */
+                 -- updated_at = CURRENT_TIMESTAMP
+         `);
+         stmt.run({ id: user.id, email: user.email /*, ... */ });
+     }
 }
 
 export default DatabaseService;

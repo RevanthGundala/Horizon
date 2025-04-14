@@ -1,5 +1,5 @@
-import { Workspace, Note, Block } from "../types";
-import { ipcCall, isElectron } from "./helpers";
+import { Workspace, Note, Block } from "../../types";
+import { ipcCall, isElectron } from "../utils/helpers";
   
   // Database service interfaces
   export interface DbWorkspacesService {

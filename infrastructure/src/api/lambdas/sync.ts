@@ -2,9 +2,7 @@ import { Client } from 'pg';
 import { v4 as uuidv4 } from 'uuid';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { createHeaders, handleOptions } from '../utils/middleware';
-import * as aws from "@pulumi/aws";
-import { createClient } from "redis"; 
-// Create a Redis client when needed, don't use global import
+import Redis from "ioredis"
 import crypto from 'crypto';
 
 type EntityType = 'workspace' | 'note' | 'block';
@@ -77,6 +75,15 @@ const ALLOWED_COLUMNS: Record<EntityType, string[]> = {
   note: ['workspace_id', 'parent_id', 'title', 'content', 'is_favorite', 'type', 'user_id'],
   block: ['note_id', 'type', 'content', 'metadata', 'order_index', 'user_id']
 };
+
+
+const getRedisClient = () => {
+  if (!process.env.REDIS_URL) {
+    throw new Error('REDIS_URL environment variable is not set');
+  }
+  const redisClient = new Redis(process.env.REDIS_URL);
+  return redisClient;
+}
 
 const validateSyncRequest = (request: SyncRequest): string[] => {
   const errors: string[] = [];
@@ -371,8 +378,7 @@ const getWorkspaceHashes = async (workspaceIds: string[]): Promise<Record<string
   if (workspaceIds.length === 0) return {};
   
   try {
-    // Create Redis client
-    const redisClient = createClient({ url: process.env.REDIS_URL });
+    const redisClient = getRedisClient();
     await redisClient.connect();
     
     const results = await Promise.all(
@@ -396,8 +402,7 @@ const getWorkspaceHashes = async (workspaceIds: string[]): Promise<Record<string
 
 const updateWorkspaceHash = async (workspaceId: string, hash: string): Promise<void> => {
   try {
-    // Create Redis client
-    const redisClient = createClient({ url: process.env.REDIS_URL });
+    const redisClient = getRedisClient();
     await redisClient.connect();
     
     const cached: CachedWorkspace = {
@@ -409,7 +414,7 @@ const updateWorkspaceHash = async (workspaceId: string, hash: string): Promise<v
     await redisClient.set(
       `workspace:${workspaceId}`,
       JSON.stringify(cached),
-      { EX: 86400 } // Expire after 1 day
+      'EX', 86400 // Expire after 1 day
     );
     
     // Close Redis connection
@@ -444,8 +449,7 @@ const compareWorkspaceHashes = async (clientHashes: Record<string, string>): Pro
 
 const getAllNotes = async (workspaceId: string): Promise<any[]> => {
   try {
-    // Create Redis client
-    const redisClient = createClient({ url: process.env.REDIS_URL });
+    const redisClient = getRedisClient();
     await redisClient.connect();
     
     const res = await redisClient.get(`notes:${workspaceId}`);
@@ -465,8 +469,7 @@ const getAllNotes = async (workspaceId: string): Promise<any[]> => {
 
 const getBlocksForWorkspace = async (workspaceId: string): Promise<any[]> => {
   try {
-    // Create Redis client
-    const redisClient = createClient({ url: process.env.REDIS_URL });
+    const redisClient = getRedisClient();
     await redisClient.connect();
     
     const res = await redisClient.get(`blocks:${workspaceId}`);
@@ -522,7 +525,12 @@ const handleSyncStatus = async (event: APIGatewayProxyEvent): Promise<APIGateway
   }
   
   try {
-    const { workspace_hashes } = JSON.parse(event.body || '{}');
+    if (!event.body) throw new Error("Request body is required");
+    let requestPayloadString = event.isBase64Encoded
+      ? Buffer.from(event.body, 'base64').toString('utf8')
+      : event.body; 
+    const body = JSON.parse(requestPayloadString);
+    const { workspace_hashes } = body;
     
     if (!workspace_hashes || typeof workspace_hashes !== 'object') {
       return {
@@ -568,7 +576,12 @@ const handleSyncPull = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
   
   try {
-    const { workspace_id, include_blocks = true } = JSON.parse(event.body || '{}');
+    if (!event.body) throw new Error("Request body is required");
+    let requestPayloadString = event.isBase64Encoded
+      ? Buffer.from(event.body, 'base64').toString('utf8')
+      : event.body;
+    const body = JSON.parse(requestPayloadString);
+    const { workspace_id, include_blocks = true } = body;
     
     if (!workspace_id) {
       return {

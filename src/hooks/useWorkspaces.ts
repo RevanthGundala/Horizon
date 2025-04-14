@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient, UseQueryOptions } from '@tanstack/react-query';
-import { Workspace, Note, Block } from '../utils/types/index';
-import { dbWorkspaces, dbNotes } from '../utils/services/db';
-import { auth } from '../utils/services/auth';
+import { Workspace, Note, Block } from '../../types/index';
+import { dbWorkspaces, dbNotes } from '../services/DataService';
+import { auth } from '../services/AuthService';
 import { v4 as uuidv4 } from 'uuid';
 
 // Note query keys
