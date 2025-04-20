@@ -13,7 +13,7 @@ echo -e "${BLUE}Starting deployment process from ${INFRA_DIR}...${NC}"
 
 # Step 1: Initialize database
 echo -e "${BLUE}Step 1: Initializing database...${NC}"
-node scripts/init-db.js
+node scripts/init-db.mjs
 if [ $? -ne 0 ]; then
   echo -e "${RED}Database initialization failed!${NC}"
   exit 1
@@ -21,7 +21,7 @@ fi
 echo -e "${GREEN}Database initialized successfully.${NC}"
 
 # Step 2: Build TypeScript code
-echo -e "${BLUE}Step 2: Building TypeScript code...${NC}"
+echo -e "${BLUE}Step 2: Building  code...${NC}"
 bun run build
 if [ $? -ne 0 ]; then
   echo -e "${RED}TypeScript build failed!${NC}"
@@ -62,7 +62,7 @@ echo -e "${GREEN}Infrastructure deployed successfully.${NC}"
 
 # Step 4: Update environment variables
 echo -e "${BLUE}Step 4: Updating environment variables...${NC}"
-node scripts/update-env.js
+bun run scripts/update-env.mjs
 if [ $? -ne 0 ]; then
   echo -e "${RED}Environment variable update failed!${NC}"
   exit 1

@@ -72,6 +72,7 @@ const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayP
 
   const code = event.queryStringParameters?.code;
   const state = JSON.parse(decodeURIComponent(event.queryStringParameters?.state || "{}"));
+  console.log("Callback state:", state);
   const clientId = process.env.WORKOS_CLIENT_ID || "";
   const workosApiKey = process.env.WORKOS_API_KEY || "";
   const cookiePassword = process.env.WORKOS_COOKIE_PASSWORD || "";
@@ -110,9 +111,29 @@ const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayP
            const existingUser = await client.query("SELECT * FROM users WHERE email = $1", [user.email]);
            if (existingUser.rows.length === 0) {
                console.log('Creating new user in DB:', user.email);
-               await client.query("INSERT INTO users (id, email) VALUES ($1, $2)", [user.id, user.email]);
+               await client.query(
+                 `INSERT INTO users (id, email, first_name, last_name, profile_picture_url, has_completed_onboarding) VALUES ($1, $2, $3, $4, $5, $6)`,
+                 [
+                   user.id,
+                   user.email,
+                   user.firstName || null,
+                   user.lastName || null,
+                   user.profilePictureUrl || null,
+                   0
+                 ]
+               );
            } else {
-               console.log('User already exists in DB:', user.email);
+               // Optionally update user profile fields if changed
+               await client.query(
+                 `UPDATE users SET first_name = $1, last_name = $2, profile_picture_url = $3 WHERE id = $4`,
+                 [
+                   user.firstName || null,
+                   user.lastName || null,
+                   user.profilePictureUrl || null,
+                   user.id
+                 ]
+               );
+               console.log('User already exists in DB, updated profile fields:', user.email);
            }
       } finally {
           await client.end();
@@ -151,7 +172,6 @@ const logoutHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayPro
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
   const apiUrl = process.env.API_URL || "";
   
-  // Extract domain from API URL if available
   const apiDomain = apiUrl ? apiUrl.split('://').pop()?.split('/')[0] : "";
 
   // Create headers object
@@ -164,7 +184,7 @@ const logoutHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayPro
   
   // Set cookie clearing header with domain attribute matching how it was set
   if (apiDomain) {
-    headers["Set-Cookie"] = `wos-session=; HttpOnly; Path=/; Max-Age=0; SameSite=None; Secure; Domain=${apiDomain}`;
+    headers["Set-Cookie"] = `wos-session=; HttpOnly; Path=/; Max-Age=0; SameSite=None; Secure`;
   } else {
     headers["Set-Cookie"] = "wos-session=; HttpOnly; Path=/; Max-Age=0; SameSite=None; Secure";
   }

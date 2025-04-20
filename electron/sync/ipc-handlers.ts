@@ -55,5 +55,11 @@ export function setupSyncIpcHandlers(): void {
          }
      });
 
+     ipcMain.handle('sync:set-online-status', async (event, status) => {
+         // You can do something with the status here, or just acknowledge
+         console.log('[IPC] Set online status:', status);
+         return { success: true };
+     });
+
     console.log("[IPC Setup] Sync Handlers Registered.");
 }

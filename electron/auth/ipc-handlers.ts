@@ -55,6 +55,11 @@ export function setupAuthIpcHandlers(): void {
     return status;
   });
 
+  // --- Get User ID (needed for onboarding/workspaces) ---
+  ipcMain.handle('auth:get-user-id', () => {
+    const user = auth.getUser();
+    return user?.id || null;
+  });
 
   // --- Removed Handlers ---
   // ipcMain.removeHandler('auth:is-authenticated'); // Clean up old handlers if needed

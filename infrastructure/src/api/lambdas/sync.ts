@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { createHeaders, handleOptions } from '../utils/middleware';
 import Redis from "ioredis"
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 
 type EntityType = 'workspace' | 'note' | 'block';
 type SyncAction = 'create' | 'update' | 'delete';
@@ -76,12 +76,18 @@ const ALLOWED_COLUMNS: Record<EntityType, string[]> = {
   block: ['note_id', 'type', 'content', 'metadata', 'order_index', 'user_id']
 };
 
-
-const getRedisClient = () => {
-  if (!process.env.REDIS_URL) {
-    throw new Error('REDIS_URL environment variable is not set');
+// --- Redis Client (lazy singleton, runtime only) ---
+let redisClient: Redis | null = null;
+function getRedisClient() {
+  if (!redisClient) {
+    if (!process.env.REDIS_URL) {
+      throw new Error('REDIS_URL environment variable is not set');
+    }
+    redisClient = new Redis(process.env.REDIS_URL);
+    redisClient.on('error', (err) => {
+      console.error('Redis client error:', err);
+    });
   }
-  const redisClient = new Redis(process.env.REDIS_URL);
   return redisClient;
 }
 
@@ -376,18 +382,11 @@ const applyChanges = async (client: Client, request: SyncRequest): Promise<SyncR
 // Workspace hash management via Redis
 const getWorkspaceHashes = async (workspaceIds: string[]): Promise<Record<string, CachedWorkspace>> => {
   if (workspaceIds.length === 0) return {};
-  
   try {
     const redisClient = getRedisClient();
-    await redisClient.connect();
-    
     const results = await Promise.all(
       workspaceIds.map(id => redisClient.get(`workspace:${id}`))
     );
-    
-    // Close Redis connection
-    await redisClient.disconnect();
-    
     return workspaceIds.reduce((acc, id, index) => {
       if (results[index]) {
         acc[id] = JSON.parse(results[index] as string);
@@ -403,22 +402,16 @@ const getWorkspaceHashes = async (workspaceIds: string[]): Promise<Record<string
 const updateWorkspaceHash = async (workspaceId: string, hash: string): Promise<void> => {
   try {
     const redisClient = getRedisClient();
-    await redisClient.connect();
-    
     const cached: CachedWorkspace = {
       id: workspaceId,
       hash,
       lastSyncedAt: new Date().toISOString()
     };
-    
     await redisClient.set(
       `workspace:${workspaceId}`,
       JSON.stringify(cached),
-      'EX', 86400 // Expire after 1 day
+      'EX', 86400 // Expire after 1 day
     );
-    
-    // Close Redis connection
-    await redisClient.disconnect();
   } catch (error) {
     console.error('Error updating workspace hash in Redis:', error);
   }
@@ -450,13 +443,7 @@ const compareWorkspaceHashes = async (clientHashes: Record<string, string>): Pro
 const getAllNotes = async (workspaceId: string): Promise<any[]> => {
   try {
     const redisClient = getRedisClient();
-    await redisClient.connect();
-    
     const res = await redisClient.get(`notes:${workspaceId}`);
-    
-    // Close Redis connection
-    await redisClient.disconnect();
-    
     if (res) {
       return JSON.parse(res as string);
     }
@@ -470,13 +457,7 @@ const getAllNotes = async (workspaceId: string): Promise<any[]> => {
 const getBlocksForWorkspace = async (workspaceId: string): Promise<any[]> => {
   try {
     const redisClient = getRedisClient();
-    await redisClient.connect();
-    
     const res = await redisClient.get(`blocks:${workspaceId}`);
-    
-    // Close Redis connection
-    await redisClient.disconnect();
-    
     if (res) {
       return JSON.parse(res as string);
     }

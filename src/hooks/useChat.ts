@@ -1,231 +1,344 @@
 // hooks/useChat.ts
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { chatService } from '../services/ChatService'; // Adjust path
+// Assuming ChatService handles communication with the main process for chat actions
+// and potentially local DB interactions. Adjust the import path as needed.
+import { chatService } from '../services/ChatService';
+// Assuming ChatMessageRecord is the type returned by chatService.getMessages
+// Adjust import path or define locally if needed.
+import { ChatMessageRecord } from '../services/ChatService'; // Or './types' etc.
 
-// Define the shape of the message object used in the UI state
+// Define the shape of the message object used specifically in the UI state
 export interface UIMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: Date; // Use Date objects in UI state for easier formatting
-  threadId: string;
-  syncStatus?: string; // Optional: for displaying status indicators
-  error?: string;     // Optional: for displaying errors per message
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    // Use Date objects in UI state for easier formatting/comparison if needed
+    timestamp: Date;
+    threadId: string;
+    // Optional fields for displaying status or errors directly on the message
+    syncStatus?: string;
+    error?: string;
 }
 
+/**
+ * Custom Hook to manage chat state, interactions, and IPC communication.
+ * @param initialThreadId - The initial chat thread to load and interact with.
+ */
 export const useChat = (initialThreadId: string = 'default_thread') => {
+    // State for the current chat thread ID
     const [currentThreadId, setCurrentThreadId] = useState<string>(initialThreadId);
+    // State for the messages displayed in the UI
     const [messages, setMessages] = useState<UIMessage[]>([]);
-    const [isLoading, setIsLoading] = useState<boolean>(false); // Is the assistant "thinking"/streaming?
-    const [error, setError] = useState<string | null>(null); // General chat error
-    const streamingAssistantMessageId = useRef<string | null>(null); // Track ID of message being streamed
+    // State indicating if the assistant is currently generating a response
+    const [isLoading, setIsLoading] = useState<boolean>(false);
+    // State for storing general errors related to chat operations
+    const [error, setError] = useState<string | null>(null);
+    // Ref to track the ID of the assistant message currently being streamed in
+    const streamingAssistantMessageId = useRef<string | null>(null);
 
-    // --- Load initial messages ---
+    // --- Load initial messages for the current thread ---
     const loadMessages = useCallback(async () => {
         console.log(`useChat: Loading messages for thread ${currentThreadId}`);
-        setIsLoading(true); // Indicate loading history
-        setError(null);
+        setIsLoading(true); // Indicate loading history (can be different from assistant loading)
+        setError(null); // Clear previous errors
         try {
-            const loadedMessages = await chatService.getMessages(currentThreadId);
-            // Map DB records to UI state, converting timestamp string to Date
-            setMessages(loadedMessages.map(m => ({
-                ...m,
-                timestamp: new Date(m.timestamp) // Convert to Date object
-            })));
-            console.log(`useChat: Loaded ${loadedMessages?.length || 0} messages.`);
+            // Fetch messages from the service (which likely uses IPC invoke)
+            const loadedMessages: ChatMessageRecord[] = await chatService.getMessages(currentThreadId);
+            // Map DB/service records to the UI message format
+            setMessages(loadedMessages.map(m => {
+                 const parsedTimestamp = new Date(m.timestamp);
+                 // console.log(`useChat loadMessages: Msg ID ${m.id}, Raw TS: ${m.timestamp}, Parsed TS: ${parsedTimestamp}, Is Valid: ${!isNaN(parsedTimestamp.getTime())}`);
+                 return {
+                    ...m, // Spread properties like id, role, content, threadId, syncStatus, error
+                    timestamp: !isNaN(parsedTimestamp.getTime()) ? parsedTimestamp : new Date() // Use parsed date or fallback to now if invalid
+                 };
+            }));
+            console.log(`useChat: Loaded ${loadedMessages?.length || 0} messages for thread ${currentThreadId}.`);
         } catch (err: any) {
             console.error("useChat: Failed to load chat messages:", err);
             setError(`Failed to load chat history: ${err.message}`);
         } finally {
-            setIsLoading(false);
+            setIsLoading(false); // Finish loading history
         }
-    }, [currentThreadId]);
+    }, [currentThreadId]); // Reload messages if the thread ID changes
 
-    // Load messages when threadId changes
+    // Effect to load messages when the hook mounts or the thread ID changes
     useEffect(() => {
         loadMessages();
-    }, [loadMessages]); // Dependency is loadMessages which depends on currentThreadId
+    }, [loadMessages]); // Dependency array includes the memoized loadMessages function
 
-    // --- Listen for IPC events from Main process ---
-    useEffect(() => {
-        if (!window.electron) {
-            console.warn("useChat: Not in Electron, skipping IPC listeners.");
-            return;
-        };
+    // --- Define IPC Event Handlers using useCallback for stable references ---
 
-        console.log('useChat: Setting up IPC listeners for thread:', currentThreadId);
+    // Handles the first chunk of a streaming assistant message
+    const handleNewAssistantMessage = useCallback((data: { threadId: string; relatedUserMessageId: string; assistantMessageId: string; firstChunk: string }) => {
+        try {
+            console.log('>>> handleNewAssistantMessage RECEIVED:', JSON.stringify(data));
+             console.log(`   Comparing data.threadId ('${data?.threadId}') vs currentThreadId ('${currentThreadId}')`);
 
-        const handleChunk = (chunkData: { threadId: string; relatedUserMessageId: string; assistantMessageId: string | null; chunk: string }) => {
-            // console.log('useChat: Received chunk:', chunkData);
-            if (chunkData.threadId !== currentThreadId) return;
+            // Ignore events for other threads or without a message ID
+            if (!data?.assistantMessageId || data?.threadId !== currentThreadId) {
+                 console.warn(`   handleNewAssistantMessage: DISCARDING event. Data Thread: ${data?.threadId}, Current Thread: ${currentThreadId}`);
+                 return;
+            }
 
-            setError(null);
-            setIsLoading(true); // Ensure loading is true while chunks arrive
+            setError(null); // Clear any previous general errors
+            setIsLoading(true); // Start loading indicator
+            streamingAssistantMessageId.current = data.assistantMessageId; // Track this message ID
 
             setMessages(prevMessages => {
-                if (!chunkData.assistantMessageId) {
-                     console.warn("useChat chunk: Received chunk without assistantMessageId");
-                     return prevMessages; // Safety check
+                // Avoid adding the same message multiple times
+                if (prevMessages.some(msg => msg.id === data.assistantMessageId)) {
+                    console.warn(`   handleNewAssistantMessage: Message ${data.assistantMessageId} already exists.`);
+                    return prevMessages;
                 }
-
-                const existingMsgIndex = prevMessages.findIndex(msg => msg.id === chunkData.assistantMessageId);
-
-                if (existingMsgIndex !== -1) {
-                    // Append chunk to existing message
-                    const updatedMessages = [...prevMessages];
-                    updatedMessages[existingMsgIndex] = {
-                        ...updatedMessages[existingMsgIndex],
-                        content: updatedMessages[existingMsgIndex].content + chunkData.chunk
-                    };
-                    return updatedMessages;
-                } else {
-                    // First chunk: Add new assistant message
-                    console.log("useChat chunk: Adding new assistant message", chunkData.assistantMessageId);
-                    streamingAssistantMessageId.current = chunkData.assistantMessageId;
-                    return [
-                        ...prevMessages,
-                        {
-                            id: chunkData.assistantMessageId,
-                            role: 'assistant',
-                            content: chunkData.chunk,
-                            timestamp: new Date(), // Timestamp of first chunk arrival
-                            threadId: chunkData.threadId,
-                            syncStatus: 'sending_stream' // Indicate it's streaming
-                        }
-                    ];
-                }
+                const newTimestamp = new Date();
+                console.log(`   handleNewAssistantMessage: Adding message ${data.assistantMessageId}`);
+                const newMsg: UIMessage = {
+                    id: data.assistantMessageId,
+                    role: 'assistant',
+                    content: data.firstChunk,
+                    timestamp: newTimestamp,
+                    threadId: data.threadId,
+                    syncStatus: 'streaming'
+                };
+                console.log('   handleNewAssistantMessage: New state length:', prevMessages.length + 1);
+                return [...prevMessages, newMsg];
             });
-        };
+            console.log(`   handleNewAssistantMessage: FINISHED processing ${data.assistantMessageId}`);
+        } catch (error) {
+             console.error("!!! Error inside handleNewAssistantMessage !!!", error);
+        }
+    }, [currentThreadId]); // Dependency: only re-create if currentThreadId changes
 
-        const handleEnd = (endData: { relatedUserMessageId: string; assistantMessageId: string | null }) => {
-             console.log('useChat: Received stream end for assistant ID:', endData.assistantMessageId);
-             // Check if this is the stream we were tracking
-             if (streamingAssistantMessageId.current === endData.assistantMessageId) {
-                setIsLoading(false); // Stop loading indicator
-                streamingAssistantMessageId.current = null; // Clear tracker
-                // Optional: Mark the specific message as 'synced' in the UI state
-                 setMessages(prev => prev.map(msg => msg.id === endData.assistantMessageId ? { ...msg, syncStatus: 'synced' } : msg));
+    // Handles subsequent chunks for an ongoing stream
+    const handleStreamChunk = useCallback((data: { threadId: string; assistantMessageId: string; chunk: string }) => {
+         try {
+            // console.log('>>> handleStreamChunk RECEIVED:', JSON.stringify(data)); // Usually too noisy
+             console.log(`   Comparing data.threadId ('${data?.threadId}') vs currentThreadId ('${currentThreadId}')`);
+
+             // Ignore events for other threads or without a message ID
+             if (!data?.assistantMessageId || data?.threadId !== currentThreadId) {
+                  console.warn(`   handleStreamChunk: DISCARDING event. Data Thread: ${data?.threadId}, Current Thread: ${currentThreadId}`);
+                 return;
              }
-        };
 
-        const handleError = (errorData: { relatedUserMessageId: string; error: string }) => {
-            console.error('useChat: Received stream/processing error:', errorData);
-            setError(`Assistant error: ${errorData.error}`);
-            setIsLoading(false); // Stop loading on error
-            streamingAssistantMessageId.current = null; // Clear tracker
-            // Optional: Mark the user message associated with the error?
-        };
+            // Ensure loading state is true (should be set by handleNewAssistantMessage)
+            // if (!isLoading) setIsLoading(true); // Might cause extra renders, rely on handleNew initiation
 
-        const handleNewAssistantMessage = (newMessageRecord: ChatMessageRecord) => {
-              console.log('useChat: Received new assistant message from background sync:', newMessageRecord);
-              if (newMessageRecord.threadId !== currentThreadId) return;
+            setMessages(prevMessages => {
+                const msgIndex = prevMessages.findIndex(msg => msg.id === data.assistantMessageId);
+                if (msgIndex === -1) {
+                     console.warn(`   handleStreamChunk setMessages: Cannot find message ${data.assistantMessageId} to append chunk.`);
+                     return prevMessages; // Should not happen if handleNewAssistantMessage worked
+                }
+                // Append the new chunk immutably
+                const updatedMessages = [...prevMessages];
+                updatedMessages[msgIndex] = {
+                    ...updatedMessages[msgIndex],
+                    content: updatedMessages[msgIndex].content + data.chunk
+                };
+                 // console.log(`   handleStreamChunk setMessages: Appended chunk to ${data.assistantMessageId}`); // Can be noisy
+                return updatedMessages;
+            });
+         } catch (error) {
+              console.error("!!! Error inside handleStreamChunk !!!", error);
+         }
+    }, [currentThreadId]); // Dependency: only re-create if currentThreadId changes
 
-              const newMessage: UIMessage = {
-                  ...newMessageRecord,
-                  timestamp: new Date(newMessageRecord.timestamp) // Convert timestamp
-              };
+    // Handles the end of a stream
+    const handleStreamEnd = useCallback((data: { assistantMessageId: string | null, threadId?: string }) => {
+        try {
+            console.log('>>> useChat handleStreamEnd: Handler called.');
+            console.log('useChat handleStreamEnd: Received data:', JSON.stringify(data));
+            console.log('useChat handleStreamEnd: Current tracked ID:', streamingAssistantMessageId.current);
 
-              setMessages(prev => {
-                  const exists = prev.some(msg => msg.id === newMessage.id);
-                  if (!exists) {
-                     console.log(`useChat newMsg: Adding message ${newMessage.id}`);
-                     // Add message and re-sort
-                     const updated = [...prev, newMessage];
-                     updated.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-                     return updated;
-                  } else {
-                     console.log(`useChat newMsg: Updating existing message ${newMessage.id}`);
-                     // Update existing message content/status if needed
-                     return prev.map(msg => msg.id === newMessage.id ? newMessage : msg);
-                  }
-              });
-              // Stop loading if we get a background message while waiting
-              setIsLoading(false);
-              streamingAssistantMessageId.current = null; // Ensure tracker is clear
-         };
+            // Filter by threadId if included in payload and different
+            if (data?.threadId && data.threadId !== currentThreadId) {
+                 console.warn(`handleStreamEnd: Ignoring end event for different thread ${data.threadId}`);
+                 return;
+            }
 
-        // --- Register listeners ---
-        const cleanupFns: Array<() => void> = [
-            () => window.electron.ipcRenderer.removeListener('chat:chunk', handleChunk),
-            () => window.electron.ipcRenderer.removeListener('chat:end', handleEnd),
-            () => window.electron.ipcRenderer.removeListener('chat:error', handleError),
-            () => window.electron.ipcRenderer.removeListener('chat:new-assistant-message', handleNewAssistantMessage),
-        ];
+            let loadingShouldBeFalse = false;
 
-        // Register the actual listeners
-        window.electron.ipcRenderer.on('chat:chunk', handleChunk);
-        window.electron.ipcRenderer.on('chat:end', handleEnd);
-        window.electron.ipcRenderer.on('chat:error', handleError);
+            // Case 1: Stream ended normally for the message we were tracking
+            if (streamingAssistantMessageId.current && streamingAssistantMessageId.current === data.assistantMessageId) {
+                console.log('useChat handleStreamEnd: IDs MATCH! Setting isLoading = false.');
+                loadingShouldBeFalse = true;
+                // Mark the message as fully synced/complete in UI state
+                setMessages(prev => prev.map(msg => msg.id === data.assistantMessageId ? { ...msg, syncStatus: 'synced' } : msg));
+
+            // Case 2: Stream ended, but no assistant message ID was ever created (backend error / no data)
+            } else if (data.assistantMessageId === null) {
+                 console.log('useChat handleStreamEnd: Received null ID. Setting isLoading = false and setting error.');
+                 loadingShouldBeFalse = true;
+                 // Set a user-friendly error message as no response was generated
+                 // Use callback form of setError to avoid overwriting a more specific error from handleStreamError
+                 setError(prevError => prevError || "Sorry, I couldn't generate a response. There might have been an issue processing your request.");
+
+            // Case 3: Mismatched IDs or other unexpected state. End loading as a fallback.
+            } else {
+                 console.warn('useChat handleStreamEnd: Mismatched IDs or unexpected state.', 'Received:', data.assistantMessageId, 'Tracked:', streamingAssistantMessageId.current);
+                 console.log('useChat handleStreamEnd: Mismatched IDs fallback. Setting isLoading = false.');
+                 loadingShouldBeFalse = true;
+            }
+
+             // Set loading false and clear tracked ID if needed
+             if(loadingShouldBeFalse) {
+                 setIsLoading(false);
+                 streamingAssistantMessageId.current = null; // Clear tracker after stream ends/errors
+             }
+        } catch (error) {
+             console.error("!!! Error inside handleStreamEnd !!!", error);
+              setIsLoading(false); // Ensure loading stops even if handler logic fails
+              streamingAssistantMessageId.current = null;
+        }
+
+    }, [currentThreadId]); // Dependency: only re-create if currentThreadId changes
+
+    // Handles explicit errors sent from the main process
+    const handleStreamError = useCallback((errorData: { relatedUserMessageId?: string; assistantMessageId?: string | null, error: string, threadId?: string }) => {
+        try {
+            console.error('>>> useChat handleStreamError: Handler called. Received errorData:', errorData);
+
+            // Filter by threadId if included in payload
+            if (errorData?.threadId && errorData.threadId !== currentThreadId) {
+                  console.warn(`handleStreamError: Ignoring error event for different thread ${errorData.threadId}`);
+                 return;
+             }
+
+             // Generate User-Friendly Error Message
+             let displayError = `Sorry, an error occurred.`; // Generic default
+             const receivedError = errorData.error || "Unknown error";
+             if (receivedError.includes('ECONNREFUSED') || receivedError.includes('connect')) {
+                 displayError = "Sorry, could not connect to an internal tool. Please try again later.";
+             } else if (receivedError.includes('timeout')) {
+                  displayError = "Sorry, the request timed out.";
+             } else if (receivedError.length < 150) { // Show shorter errors
+                  displayError = `Assistant error: ${receivedError}`;
+             }
+             setError(displayError);
+
+             // Optionally mark specific message with error status
+             const errorIdToMark = errorData.assistantMessageId || errorData.relatedUserMessageId;
+             if (errorIdToMark) {
+                 setMessages(prev => prev.map(msg => msg.id === errorIdToMark ? { ...msg, error: receivedError, syncStatus: 'error' } : msg));
+             }
+
+             // Ensure loading stops and tracker is cleared
+             console.log('useChat handleStreamError: Setting isLoading = false.');
+             setIsLoading(false);
+             streamingAssistantMessageId.current = null; // Clear tracker on error
+
+        } catch (error) {
+            console.error("!!! Error inside handleStreamError !!!", error);
+             setIsLoading(false); // Ensure loading stops even if handler logic fails
+             streamingAssistantMessageId.current = null;
+        }
+    }, [currentThreadId]); // Dependency: only re-create if currentThreadId changes
+
+    // --- Effect to set up and clean up IPC listeners ---
+    useEffect(() => {
+        // Ensure we are in Electron context
+        if (!window.electron?.ipcRenderer?.on) {
+            console.warn("useChat: window.electron.ipcRenderer.on not available, skipping IPC listeners.");
+            return;
+        }
+
+        const effectInstanceId = Math.random().toString(36).substring(2, 7);
+        console.log(`%c>>> LISTENER SETUP [${effectInstanceId}] (For Thread ID: ${currentThreadId})`, 'color: blue; font-weight: bold;');
+
+        // Register IPC listeners; return values are void so we use removeListener for cleanup
         window.electron.ipcRenderer.on('chat:new-assistant-message', handleNewAssistantMessage);
+        window.electron.ipcRenderer.on('chat:stream-chunk', handleStreamChunk);
+        window.electron.ipcRenderer.on('chat:stream-end', handleStreamEnd);
+        window.electron.ipcRenderer.on('chat:stream-error', handleStreamError);
 
-        // --- Cleanup function ---
+        // Cleanup function: Remove listeners when effect re-runs or component unmounts
         return () => {
-            console.log('useChat: Cleaning up IPC listeners for thread:', currentThreadId);
-            cleanupFns.forEach(cleanup => cleanup());
+            console.log(`%c<<< LISTENER CLEANUP [${effectInstanceId}] (For Thread ID: ${currentThreadId})`, 'color: gray; text-decoration: line-through;');
+            window.electron.ipcRenderer.removeListener('chat:new-assistant-message', handleNewAssistantMessage);
+            window.electron.ipcRenderer.removeListener('chat:stream-chunk', handleStreamChunk);
+            window.electron.ipcRenderer.removeListener('chat:stream-end', handleStreamEnd);
+            window.electron.ipcRenderer.removeListener('chat:stream-error', handleStreamError);
         };
-    }, [currentThreadId]); // Re-subscribe if threadId changes
+        // Dependencies: Re-run effect if threadId changes or if handler references change (they shouldn't with useCallback)
+    }, [currentThreadId, handleNewAssistantMessage, handleStreamChunk, handleStreamEnd, handleStreamError]);
 
-
-    // --- Function to send a message ---
+    // --- Function to send a user message ---
     const sendMessage = useCallback(async (content: string) => {
-        if (!content.trim() || isLoading) return; // Prevent sending empty or while loading
+        const trimmedContent = content.trim();
+        if (!trimmedContent || isLoading) { // Prevent sending empty or while already loading
+             console.warn("sendMessage blocked: empty content or already loading.");
+             return;
+        }
 
-        const tempId = `local-${Date.now()}`;
+        // Clear previous general errors
+        setError(null);
+        // Set loading state immediately
+        setIsLoading(true);
+        // Reset the streaming ID tracker for the new message
+        streamingAssistantMessageId.current = null;
+
+        // Optimistic UI update: Add user message immediately
+        const tempId = `local-${Date.now()}`; // Temporary ID for optimistic UI
         const userMessage: UIMessage = {
             id: tempId,
             role: 'user',
-            content: content.trim(),
-            timestamp: new Date(),
+            content: trimmedContent,
+            timestamp: new Date(), // Use current time for optimistic display
             threadId: currentThreadId,
-            syncStatus: 'local'
+            syncStatus: 'sending' // Show as sending
         };
-
-        // Optimistic UI update
         setMessages(prev => [...prev, userMessage]);
-        setError(null);
-        setIsLoading(true); // Start loading indicator
-        streamingAssistantMessageId.current = null; // Reset tracker
 
         try {
-            // Call the service method to save locally and trigger backend
+            // Trigger the main process to handle sending/streaming
             const result = await chatService.sendMessage({
                 threadId: currentThreadId,
-                content: content.trim()
+                content: trimmedContent
             });
 
+            // Check result from main process's initial handling
             if (result?.success && result.messageId) {
-                 console.log(`useChat sendMessage: User message ${result.messageId} sent to main process.`);
-                 // Update message ID from temp to real one
-                 setMessages(prev => prev.map(msg =>
-                    msg.id === tempId ? { ...msg, id: result.messageId!, timestamp: new Date(result.timestamp!) } : msg
-                 ));
-                 // Keep isLoading=true, waiting for 'chat:chunk', 'chat:end', or 'chat:error'
+                console.log(`useChat sendMessage: User message ${result.messageId} sent to main process.`);
+                // Update the optimistic message with the real ID and timestamp from DB
+                setMessages(prev => prev.map(msg =>
+                    msg.id === tempId
+                        ? { ...msg, id: result.messageId!, timestamp: new Date(result.timestamp!), syncStatus: 'sent' } // Mark as sent
+                        : msg
+                ));
+                // Keep isLoading=true; waiting for stream events (new-assistant-message, end, error)
             } else {
-                throw new Error(result?.error || 'Failed to initiate message send');
+                // If main process returned failure immediately
+                throw new Error(result?.error || 'Failed to initiate message send in main process');
             }
         } catch (err: any) {
-            console.error('useChat sendMessage: Error:', err);
-            setError(err.message);
-            setIsLoading(false); // Stop loading on immediate failure
-            // Mark optimistic message as failed
+            console.error('useChat sendMessage: Error sending message:', err);
+            setError(`Failed to send message: ${err.message}`); // Set general error state
+            setIsLoading(false); // Stop loading as the process failed
+            // Mark optimistic message as failed in the UI
             setMessages(prev => prev.map(msg =>
                 msg.id === tempId ? { ...msg, syncStatus: 'error', error: err.message } : msg
             ));
         }
-    }, [currentThreadId, isLoading]); // Include isLoading in dependencies
+    }, [currentThreadId, isLoading]); // Dependency includes isLoading to prevent concurrent sends
 
+    // --- Return state and functions needed by the UI component ---
     return {
         currentThreadId,
-        setCurrentThreadId, // Allow changing threads
-        messages,
-        isLoading,
-        error,
-        sendMessage, // Function to send a new message
-        loadMessages, // Function to manually reload messages if needed
+        setCurrentThreadId, // Function to allow changing threads
+        messages,           // The array of messages to display
+        isLoading,          // Boolean indicating if assistant is responding
+        error,              // String containing the latest error message or null
+        sendMessage,        // Function for the UI to call to send a message
+        loadMessages,       // Function to explicitly reload messages if needed
     };
 };
 
-// Helper type (ensure it matches DB record)
+// Reminder: Make sure ChatMessageRecord is defined or imported correctly,
+// matching the structure returned by chatService.getMessages.
+// Example:
+/*
 export interface ChatMessageRecord {
     id: string;
     threadId: string;
@@ -234,8 +347,7 @@ export interface ChatMessageRecord {
     timestamp: string; // ISO String from DB
     userId?: string | null;
     syncStatus?: string;
-    serverMessageId?: string | null;
-    errorMessage?: string | null;
-    retryCount?: number;
+    error?: string | null; // Renamed from errorMessage for consistency?
     relatedUserMessageId?: string | null;
 }
+*/

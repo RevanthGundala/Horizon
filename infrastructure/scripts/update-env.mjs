@@ -1,6 +1,10 @@
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Get app environment from Pulumi config or default to 'development'
 let appEnv = 'development';
@@ -17,8 +21,8 @@ const electronEnvFilePath = path.join(projectRoot, 'electron', `.env.${appEnv}`)
 
 // Mapping for output keys to environment variable names
 const outputKeyMapping = {
-  apiGatewayEndpoint: 'API_URL',
-  chatFunctionUrlEndpoint: 'CHAT_URL'
+  cloudfrontDomain: 'API_URL',
+  chatFunctionUrlOutput: 'CHAT_URL'
 };
 
 // List of public config keys that should be exposed to the frontend with VITE_ prefix
@@ -52,13 +56,14 @@ const writeEnvFile = (filePath, isVite = false) => {
 };
 
 
-  // Get API endpoint
-  outputs[outputKeyMapping.apiGatewayEndpoint] = execSync('pulumi stack output apiGatewayEndpoint', { encoding: 'utf8' }).trim();
-  console.log(`Retrieved API endpoint: ${outputs[outputKeyMapping.apiGatewayEndpoint]}`);
+  // Get CloudFront domain and set as API_URL
+  const cloudfrontDomain = execSync('pulumi stack output cloudfrontDomain', { encoding: 'utf8' }).trim();
+  outputs[outputKeyMapping.cloudfrontDomain] = `https://${cloudfrontDomain}`;
+  console.log(`Retrieved CloudFront domain: ${outputs[outputKeyMapping.cloudfrontDomain]}`);
 
   // Get Chat Function URL endpoint
-  outputs[outputKeyMapping.chatFunctionUrlEndpoint] = execSync('pulumi stack output chatFunctionUrlEndpoint', { encoding: 'utf8' }).trim();
-  console.log(`Retrieved Chat Function URL: ${outputs[outputKeyMapping.chatFunctionUrlEndpoint]}`);
+  outputs[outputKeyMapping.chatFunctionUrlOutput] = execSync('pulumi stack output chatFunctionUrlOutput', { encoding: 'utf8' }).trim();
+  console.log(`Retrieved Chat Function URL: ${outputs[outputKeyMapping.chatFunctionUrlOutput]}`);
 
   // Get other Pulumi config values
   for (const key of publicConfigKeys) {
@@ -82,4 +87,3 @@ const writeEnvFile = (filePath, isVite = false) => {
   console.error('Error updating environment variables:', error);
   process.exit(1);
 }
-

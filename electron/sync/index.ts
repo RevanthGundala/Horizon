@@ -3,10 +3,10 @@ import { AuthService } from '../auth'; // Adjust path
 import DatabaseService, { Note, Block } from '../data'; // Adjust path
 import crypto from 'crypto';
 import { getMainWindowWebContents } from '../main';
+import { SYNC_INTERVAL_MS } from '../constants';
 
 // --- Configuration ---
 const API_URL = process.env.VITE_API_URL || process.env.API_URL || 'https://vihy6489c7.execute-api.us-west-2.amazonaws.com/stage';
-const SYNC_INTERVAL_MS = 30 * 1000; // 30 seconds
 
 // ============================================================================
 // Sync Service Class
@@ -287,7 +287,7 @@ if (!authService.isAuthenticated()) {
         }
 
         // Get all notes directly belonging to this workspace
-        const directNotes = this.db.getNotes(workspaceId, undefined); // Notes where workspace_id = wsId and parent_id IS NULL? or just workspace_id = wsId? --> Assume all notes in workspace needed.
+        const directNotes = this.db.getNotes(workspaceId, undefined); // Assuming notes with workspace_id
         const allNotesInWorkspace = this.getAllNotesInWorkspace(workspaceId); // Get ALL notes (direct & nested)
         const allNoteIds = allNotesInWorkspace.map(n => n.id);
         const allBlocksInWorkspace = allNoteIds.length > 0 ? this.db.getBlocksForNotes(allNoteIds) : []; // Needs getBlocksForNotes

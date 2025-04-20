@@ -1,180 +1,257 @@
+// infrastructure/index.ts – Pulumi program that wires API Gateway + Lambda Function URL behind a single
+// CloudFront distribution.  This version fixes the “origin name must be a domain name” error and removes
+// hard‑coded secrets.  Supply all values with `pulumi config set` (and add `--secret` for sensitive data).
+
 import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
-import * as awsx from "@pulumi/awsx"; // Using classic API Gateway here
-
-// Import our Lambda handlers
-import { statusApi } from "./api/lambdas/status";
+import * as awsx from "@pulumi/awsx";
+import * as path from "path";
+import { syncApi } from "./api/lambdas/sync";
 import { userApi } from "./api/lambdas/user";
 import { authApi } from "./api/lambdas/auth";
-import { syncApi } from "./api/lambdas/sync";
-import * as path from "path";
-import { chatApi } from "./api/lambdas/chat";
+import { statusApi } from "./api/lambdas/status";
 
-// Get environment variables from Pulumi config
-const config = new pulumi.Config();
-const apiUrl = config.require("API_URL"); // Base URL for API Gateway endpoints
-const fireworksApiKey = config.requireSecret("FIREWORKS_API_KEY");
-const frontendUrl = config.require("FRONTEND_URL"); // Used for CORS
-const workosApiKey = config.requireSecret("WORKOS_API_KEY");
-const workosClientId = config.requireSecret("WORKOS_CLIENT_ID");
-const workosPassword = config.requireSecret("WORKOS_COOKIE_PASSWORD");
-const openaiApiKey = config.requireSecret("OPENAI_API_KEY");
+// ‑‑‑ Helper --------------------------------------------------------------
+// Split an https URL into hostname + pathname (stage).  CloudFront needs these separately.
+function split(url: pulumi.Output<string>) {
+  return {
+    host: url.apply(u => new URL(u).hostname),                          // "abcd.execute-api…"
+    path: url.apply(u => {
+      const p = new URL(u).pathname.replace(/\/$/, "");               // "/stage" | "/dev" | ""
+      return p || "/";                                                 // CloudFront requires at least "/"
+    }),
+  } as const;
+}
 
-// --- Database & Redis Config ---
-// TODO: Securely manage password/connection strings using Pulumi secrets or KMS
-const password = "zisbas-roCfud-9kappe"; // WARNING: Hardcoding secrets is insecure
-const connectionString = `postgresql://postgres.wduhigsetfxsisltbjhr:${password}@aws-0-us-east-1.pooler.supabase.com:6543/postgres`;
-const redisUrl = "redis://default:AWo3AAIjcDFmMjQ3ZWU1YjZkMTA0NTJiOTk1OWM2OGI5NmQwYzgzYnAxMA@diverse-egret-27191.upstash.io:6379"; // WARNING: Hardcoding secrets is insecure
+// ‑‑‑ Config -------------------------------------------------------------
+const cfg = new pulumi.Config();
 
-// Common environment variables for all Lambda functions
-// Ensure CHAT_FUNCTION_URL is NOT needed here if client gets it from Pulumi output
-const env = {
- variables: {
-   WORKOS_API_KEY: workosApiKey,
-   WORKOS_CLIENT_ID: workosClientId,
-   WORKOS_COOKIE_PASSWORD: workosPassword,
-   FRONTEND_URL: frontendUrl,
-   FIREWORKS_API_KEY: fireworksApiKey,
-   API_URL: apiUrl, // Keep for Lambdas needing the base API URL
-   DB_URL: connectionString,
-   DATABASE_URL: connectionString, // Some libraries prefer this name
-   OPENAI_API_KEY: openaiApiKey,
-   REDIS_URL: redisUrl
- }
+// runtime (non‑secret) values
+type RequiredKey = "API_URL" | "FRONTEND_URL" | "CHAT_URL";
+const apiUrl           = cfg.require<RequiredKey>("API_URL");
+const frontendUrl      = cfg.require("FRONTEND_URL");
+const chatUrl          = cfg.require("CHAT_URL");
+
+// secrets – always store with `pulumi config set --secret <key>`
+const fireworksApiKey  = cfg.requireSecret("FIREWORKS_API_KEY");
+const workosApiKey     = cfg.requireSecret("WORKOS_API_KEY");
+const workosClientId   = cfg.requireSecret("WORKOS_CLIENT_ID");
+const workosCookiePwd  = cfg.requireSecret("WORKOS_COOKIE_PASSWORD");
+const openaiApiKey     = cfg.requireSecret("OPENAI_API_KEY");
+const redisUrl = cfg.requireSecret("REDIS_URL");
+const dbUrl = cfg.requireSecret("DB_URL");
+
+// ‑‑‑ Common Lambda env ---------------------------------------------------
+const commonEnv = {
+  variables: {
+    WORKOS_API_KEY:         workosApiKey,
+    WORKOS_CLIENT_ID:       workosClientId,
+    WORKOS_COOKIE_PASSWORD: workosCookiePwd,
+    FRONTEND_URL:           frontendUrl,
+    FIREWORKS_API_KEY:      fireworksApiKey,
+    API_URL:                apiUrl,
+    OPENAI_API_KEY:         openaiApiKey,
+    REDIS_URL:              redisUrl,
+    CHAT_URL:               chatUrl,
+    DB_URL:                 dbUrl,
+  },
 };
 
-// --- Database Initialization ---
-// Keep console logs as reminders
-console.log("🔷 Skipping database initialization during deployment");
-
-// --- Define IAM Role for Lambdas ---
-// It's good practice to define a role explicitly
+// ‑‑‑ IAM role -----------------------------------------------------------
 const lambdaRole = new aws.iam.Role("lambdaRole", {
   assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({ Service: "lambda.amazonaws.com" }),
 });
-
-// --- Define Lambda Function for Streaming Chat using aws.lambda.Function ---
-const streamingChatLambda = new aws.lambda.Function("streaming-chat-handler-func", {
-  // Specify the path to your compiled Javascript code package
-  code: new pulumi.asset.FileArchive(path.join(__dirname, "../dist")), // ADJUST PATH to your build output directory
-  // Specify the handler entrypoint: 'filename.exportedHandlerName'
-  handler: "api/lambdas/chat.chatApi.chat", // ADJUST filename (chat.js?) and exported name if needed
-  runtime: aws.lambda.Runtime.NodeJS18dX, // <== IS SET
-  role: lambdaRole.arn, // Assign the IAM role
-  environment: env,
-  timeout: 180,
-  memorySize: 1024,
+new aws.iam.RolePolicyAttachment("lambdaLogs", {
+  role:       lambdaRole.name,
+  policyArn:  aws.iam.ManagedPolicy.AWSLambdaBasicExecutionRole,
 });
 
+// ‑‑‑ Streaming Lambda (Function URL) ------------------------------------
+const streamingChatLambda = new aws.lambda.Function("streamingChat", {
+  code:    new pulumi.asset.FileArchive(path.join(__dirname, "../dist")),
+  handler: "chat.streamingChatHandler",
+  role:    lambdaRole.arn,
+  runtime: aws.lambda.Runtime.NodeJS18dX,
+  timeout: 180,
+  memorySize: 1024,
+  environment: commonEnv,
+});
 
-// --- Create Lambda Function URL for Streaming Chat ---
-// This part remains the same, targeting the new aws.lambda.Function resource
-const chatFunctionUrl = new aws.lambda.FunctionUrl("chatFunctionUrl", {
-  functionName: streamingChatLambda.name, // Targets the aws.lambda.Function
+const chatFunctionUrl = new aws.lambda.FunctionUrl("chatUrl", {
+  functionName:   streamingChatLambda.name,
   authorizationType: "NONE",
-  invokeMode: "RESPONSE_STREAM",
+  invokeMode:     "RESPONSE_STREAM",
   cors: {
     allowCredentials: true,
-    allowHeaders: ["Content-Type", "Cookie", "Authorization", "X-Electron-App"],
-    allowMethods: ["POST"],
-    allowOrigins: ["*"],
-    exposeHeaders: ["*"],
-    maxAge: 86400,
+    allowHeaders:  ["Content-Type", "Cookie", "Authorization", "X-Electron-App"],
+    allowMethods:  ["POST"],
+    allowOrigins:  ["*"],
+    exposeHeaders: ["*"] ,
   },
 });
 
-
-// --- Create API Gateway for REST Endpoints (Non-Chat) ---
+// ‑‑‑ API Gateway (all other REST endpoints) -----------------------------
 const api = new awsx.classic.apigateway.API("horizon-api", {
- restApiArgs: {
-   binaryMediaTypes: ["*/*"], // Keep if needed for other endpoints
- },
- stageArgs: {
-   cacheClusterEnabled: false,
- },
- routes: [
-   // Status endpoint
-   {
-     path: "/api/status",
-     method: "GET",
-     // Assuming statusApi.check is a standard request/response handler
-     eventHandler: new aws.lambda.CallbackFunction("status-handler", {
+  restApiArgs: {
+    binaryMediaTypes: ["*/*"], // Keep if needed for other endpoints
+  },
+  stageArgs: {
+    cacheClusterEnabled: false,
+  },
+  routes: [
+    // Status endpoint
+    {
+      path: "/api/status",
+      method: "GET",
+      // Assuming statusApi.check is a standard request/response handler
+      eventHandler: new aws.lambda.CallbackFunction("status-handler", {
         callback: statusApi.check,
-        environment: env,
-     }),
-   },
-   // Authentication endpoints (standard request/response)
-   {
-     path: "/api/auth/login",
-     method: "GET",
-     eventHandler: new aws.lambda.CallbackFunction("login-handler", {
-       callback: authApi.login,
-       environment: env,
-     }),
-   },
-   {
-     path: "/api/auth/callback",
-     method: "GET",
-     eventHandler: new aws.lambda.CallbackFunction("callback-handler", {
-       callback: authApi.callback,
-       environment: env,
-     }),
-   },
-   {
-     path: "/api/auth/logout",
-     method: "GET", // Consider POST for logout if preferred
-     eventHandler: new aws.lambda.CallbackFunction("logout-handler", {
-       callback: authApi.logout,
-       environment: env,
-     }),
-   },
-   // User endpoint (uses /me path - CORRECTED)
-   {
-     path: "/api/users/me",
-     method: "GET",
-     eventHandler: new aws.lambda.CallbackFunction("get-current-user-handler", { // Renamed
-       callback: userApi.user, // Assumes this uses withAuth
-       environment: env,
-     }),
-   },
-   // Sync endpoints (standard request/response)
-   {
-     path: "/api/sync/status",
-     method: "POST",
-     eventHandler: new aws.lambda.CallbackFunction("sync-status-handler", {
-       callback: syncApi.status,
-       environment: env,
-     }),
-   },
-   {
-     path: "/api/sync/pull",
-     method: "POST",
-     eventHandler: new aws.lambda.CallbackFunction("sync-pull-handler", {
-       callback: syncApi.pull,
-       environment: env,
-       memorySize: 512, // Sync might need more memory
-       timeout: 60,    // Sync might take longer
-     }),
-   },
-   {
-     path: "/api/sync/push",
-     method: "POST",
-     eventHandler: new aws.lambda.CallbackFunction("sync-push-handler", {
-       callback: syncApi.push,
-       environment: env,
-       memorySize: 512,
-       timeout: 60,
-     }),
-   },
-   // NOTE: The /api/chat route is intentionally REMOVED from API Gateway
-   // as it's now handled by the direct Lambda Function URL.
- ],
+        environment: commonEnv,
+      }),
+    },
+    // Authentication endpoints (standard request/response)
+    {
+      path: "/api/auth/login",
+      method: "GET",
+      eventHandler: new aws.lambda.CallbackFunction("login-handler", {
+        callback: authApi.login,
+        environment: commonEnv,
+      }),
+    },
+    {
+      path: "/api/auth/callback",
+      method: "GET",
+      eventHandler: new aws.lambda.CallbackFunction("callback-handler", {
+        callback: authApi.callback,
+        environment: commonEnv,
+      }),
+    },
+    {
+      path: "/api/auth/logout",
+      method: "GET", // Consider POST for logout if preferred
+      eventHandler: new aws.lambda.CallbackFunction("logout-handler", {
+        callback: authApi.logout,
+        environment: commonEnv,
+      }),
+    },
+    // User endpoint (uses /me path - CORRECTED)
+    {
+      path: "/api/users/me",
+      method: "GET",
+      eventHandler: new aws.lambda.CallbackFunction("get-current-user-handler", { // Renamed
+        callback: userApi.user, // Assumes this uses withAuth
+        environment: commonEnv,
+      }),
+    },
+    // Sync endpoints (standard request/response)
+    {
+      path: "/api/sync/status",
+      method: "POST",
+      eventHandler: new aws.lambda.CallbackFunction("sync-status-handler", {
+        callback: syncApi.status,
+        environment: commonEnv,
+      }),
+    },
+    {
+      path: "/api/sync/pull",
+      method: "POST",
+      eventHandler: new aws.lambda.CallbackFunction("sync-pull-handler", {
+        callback: syncApi.pull,
+        environment: commonEnv,
+        memorySize: 512, // Sync might need more memory
+        timeout: 60,    // Sync might take longer
+      }),
+    },
+    {
+      path: "/api/sync/push",
+      method: "POST",
+      eventHandler: new aws.lambda.CallbackFunction("sync-push-handler", {
+        callback: syncApi.push,
+        environment: commonEnv,
+        memorySize: 512,
+        timeout: 60,
+      }),
+    },
+    // NOTE: The /api/chat route is intentionally REMOVED from API Gateway
+    // as it's now handled by the direct Lambda Function URL.
+  ],
 });
 
-// --- Exports ---
 
-// Export the standard API Gateway endpoint URL (for non-chat endpoints)
-export const apiGatewayEndpoint = api.url;
+// ‑‑‑ CloudFront origins --------------------------------------------------
+const apiParts  = split(api.url);                       // host + "/stage"
+const chatParts = split(chatFunctionUrl.functionUrl);   // host + "/"
+const allMethods = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"];
+const allCachedMethods = ["GET", "HEAD", "OPTIONS"]
+const cachingDisabledPolicyId = aws.cloudfront.getCachePolicyOutput({
+  name: "Managed-CachingDisabled",
+});
+const allViewerExceptHostHeaderPolicy = aws.cloudfront.getOriginRequestPolicyOutput({
+  name: "Managed-AllViewerExceptHostHeader",
+});
 
-// Export the specific Lambda Function URL for streaming chat
-export const chatFunctionUrlEndpoint = chatFunctionUrl.functionUrl;
+const distribution = new aws.cloudfront.Distribution("horizon-cf", {
+  enabled: true,
+  priceClass: "PriceClass_100",
+  origins: [
+    {
+      domainName: apiParts.host,
+      originId:   "api-gw",
+      originPath: apiParts.path,        // e.g. "/stage"
+      customOriginConfig: {
+        originProtocolPolicy: "https-only",
+        httpsPort: 443,
+        httpPort: 80,
+        originSslProtocols: ["TLSv1.2"],
+      },
+    },
+    {
+      domainName: chatParts.host,
+      originId:   "chat-url",
+      customOriginConfig: {
+        originProtocolPolicy: "https-only",
+        httpsPort: 443,
+        httpPort: 80,
+        originSslProtocols: ["TLSv1.2"],
+      },
+    },
+  ],
+  defaultCacheBehavior: {
+    targetOriginId: "api-gw",
+    viewerProtocolPolicy: "redirect-to-https",
+    allowedMethods: ["GET", "HEAD", "OPTIONS"],
+    cachedMethods:  ["GET", "HEAD"],
+    cachePolicyId: cachingDisabledPolicyId.id!.apply(id => {
+      if (!id) throw new Error("Managed-CachingDisabled policy not found");
+      return id;
+    }),
+    originRequestPolicyId: allViewerExceptHostHeaderPolicy.id!.apply(id => {
+      if (!id) throw new Error("Managed-AllViewerExceptHostHeader policy not found");
+      return id;
+    }),
+  },
+  orderedCacheBehaviors: [
+    {
+      pathPattern: "/api/chat*",      // Function URL path
+      targetOriginId: "chat-url",
+      viewerProtocolPolicy: "redirect-to-https",
+      allowedMethods: allMethods,
+      cachedMethods:  allCachedMethods,
+      cachePolicyId: cachingDisabledPolicyId.id!.apply(id => {
+        if (!id) throw new Error("Managed-CachingDisabled policy not found");
+        return id;
+      }),
+      originRequestPolicyId: allViewerExceptHostHeaderPolicy.id!.apply(id => {
+        if (!id) throw new Error("Managed-AllViewerExceptHostHeader policy not found");
+        return id;
+      }),
+    },
+  ],
+  restrictions: { geoRestriction: { restrictionType: "none" } },
+  viewerCertificate: { cloudfrontDefaultCertificate: true },
+});
+
+// ‑‑‑ Stack outputs ------------------------------------------------------
+export const apiGatewayEndpoint    = api.url;
+export const chatFunctionUrlOutput = chatFunctionUrl.functionUrl;
+export const cloudfrontDomain      = distribution.domainName;

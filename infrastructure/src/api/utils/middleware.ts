@@ -11,25 +11,14 @@ export const withAuth = (
     if (event.httpMethod === "OPTIONS") {
       return handleOptions(event);
     }
-    
+
+    console.log("AUTH MIDDLEWARE - Starting authentication process");
+
     // Check for session data in cookies first
     const cookies = parseCookies(event.headers.cookie || event.headers.Cookie); // Handle potential case difference
       
     // Use cookie session data, or bearer token, or empty string
     const sessionData = cookies["wos-session"];
-
-    // Read FRONTEND_URL from process.env at runtime
-    const frontendUrl = process.env.FRONTEND_URL;
-    if (!frontendUrl) {
-       console.error("FRONTEND_URL environment variable is not set.");
-       // Return an error or fallback, but ideally it should always be set
-       return { 
-         statusCode: 500, 
-         headers: createHeaders(event.headers.origin || event.headers.Origin),
-         body: JSON.stringify({ error: "Internal configuration error" }) 
-       };
-    }
-
 
     if (!sessionData) {
       console.log('🔍 AUTH MIDDLEWARE - No session data, authentication required');
@@ -116,10 +105,10 @@ export const withAuth = (
 
 export const createHeaders = (origin?: string) => {
   // Get the frontend URL from environment variables
-  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
-  
+  const frontendUrl = process.env.FRONTEND_URL || "";
+  const chatUrl = process.env.CHAT_URL || ""; 
   // Use the provided origin or default to the frontend URL
-  const allowOrigin = origin || frontendUrl;
+  const allowOrigin = origin || frontendUrl || chatUrl;
   
   return {
     "Content-Type": "application/json",
@@ -134,7 +123,7 @@ export const createHeaders = (origin?: string) => {
 // Handler for OPTIONS requests (CORS preflight)
 export const handleOptions = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   // Get the origin from the request headers
-  const origin = event.headers.origin || event.headers.Origin || process.env.FRONTEND_URL;
+  const origin = event.headers.origin || event.headers.Origin || process.env.FRONTEND_URL || process.env.CHAT_URL;
   
   return {
     statusCode: 200,
@@ -156,10 +145,6 @@ export const parseCookies = (cookieHeader?: string): Record<string, string | und
   return cookieHeader ? cookie.parse(cookieHeader) : {};
 };
 
-export const isElectronRequest = (event: APIGatewayProxyEvent) => event.headers['X-Electron-App'] === 'true' || 
-event.headers['x-electron-app'] === 'true';
-
-
 interface SetCookieOptions {
   sealedSession: string | undefined;
   origin: string | undefined;
@@ -169,38 +154,47 @@ interface SetCookieOptions {
   state: { redirect: string };
 }
 
-export function setCookie(options: SetCookieOptions): APIGatewayProxyResult {     // Get the domain from the API URL
-    const apiUrl = process.env.API_URL || "";
-    const domain = apiUrl ? apiUrl.split('://').pop()?.split('/')[0] : "";
-    
+export function setCookie(options: SetCookieOptions): APIGatewayProxyResult {  
+    const chatUrl = process.env.CHAT_URL || "";
+    if(!chatUrl) {
+      return {  
+        statusCode: 400,
+        headers: createHeaders(options.origin || chatUrl),
+        body: JSON.stringify({ error: "Chat URL not configured" }),
+      };
+    }
     if (!options.sealedSession) {
       return {  
         statusCode: 400,
-        headers: createHeaders(options.origin || "http://localhost:5173"),
+        headers: createHeaders(options.origin || chatUrl),
         body: JSON.stringify({ error: "No sealed session available" }),
       };
     }
+    const maxAgeSeconds = 7 * 24 * 60 * 60; // 7 days in seconds
 
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    const frontendUrl = process.env.FRONTEND_URL || "";
     if (options.state.redirect === "electron") {
+      const headers = {
+        "Set-Cookie": `wos-session=${options.sealedSession}; HttpOnly; Path=/; SameSite=None; Secure; Max-Age=${maxAgeSeconds}`,
+        "Access-Control-Allow-Origin": options.origin || "http://localhost:5173",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Expose-Headers": "Set-Cookie",
+      };
+      console.log("BACKEND DEBUG: Electron redirect state:", headers);
       return {
         statusCode: 200,
-        headers: {
-          "Set-Cookie": `wos-session=${options.sealedSession}; HttpOnly; Path=/; SameSite=None; Secure${domain ? `; Domain=${domain}` : ''}`,
-          "Access-Control-Allow-Origin": options.origin || frontendUrl,
-          "Access-Control-Allow-Credentials": "true",
-          "Access-Control-Expose-Headers": "Set-Cookie",
-        },
+        headers,
         body: "",
       };
     }
     // Redirect user back to website if request is from web
+    console.log("BACKEND DEBUG: Redirecting to settings page");
   return {
     statusCode: 302,
     headers: {
-      "Set-Cookie": `wos-session=${options.sealedSession}; HttpOnly; Path=/; SameSite=None; Secure${domain ? `; Domain=${domain}` : ''}`,
+      "Set-Cookie": `wos-session=${options.sealedSession}; HttpOnly; Path=/; SameSite=None; Secure; Max-Age=${maxAgeSeconds}`,
       "Location": `${frontendUrl}/settings`,
-      "Access-Control-Allow-Origin": options.origin || frontendUrl,
+      "Access-Control-Allow-Origin": options.origin || "http://localhost:5173",
       "Access-Control-Allow-Credentials": "true",
       "Access-Control-Expose-Headers": "Set-Cookie",
     },

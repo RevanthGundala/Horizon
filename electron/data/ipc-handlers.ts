@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron';
+import { ipcMain, net } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
 import DatabaseService, { Block, Note } from './index';
 import { AuthService } from '../auth';
@@ -282,25 +282,41 @@ if (!authService.isAuthenticated()) {
 }
 
     
-    // Send to embeddings API
-    const response = await fetch(`${API_URL}/api/embeddings/generate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+    // Send to embeddings API using Electron net.request
+    await new Promise<void>((resolve, reject) => {
+      const request = net.request({
+        method: 'POST',
+        url: `${API_URL}/api/embeddings/generate`,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      request.on('response', (response) => {
+        let body = '';
+        response.on('data', (chunk) => {
+          body += chunk;
+        });
+        response.on('end', () => {
+          if (response.statusCode && response.statusCode >= 200 && response.statusCode < 300) {
+            console.log(` [ELECTRON IPC] Successfully processed block ${block.id} for embedding`);
+            resolve();
+          } else {
+            console.error(` [ELECTRON IPC] Error from embeddings API: ${response.statusCode} ${response.statusMessage}`);
+            reject(new Error(body));
+          }
+        });
+      });
+      request.on('error', (err) => {
+        console.error(' [ELECTRON IPC] net.request error:', err);
+        reject(err);
+      });
+      request.write(JSON.stringify({
         blockId: block.id,
         content: block.content
-      }),
-      credentials: 'include'
+      }));
+      request.end();
     });
-    
-    if (!response.ok) {
-      console.error(` [ELECTRON IPC] Error from embeddings API: ${response.status} ${response.statusText}`);
-      return;
-    }
-    
-    console.log(` [ELECTRON IPC] Successfully processed block ${block.id} for embedding`);
   } catch (error) {
     console.error(' [ELECTRON IPC] Error processing block for embedding:', error);
   }

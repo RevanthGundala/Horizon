@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 
-const { Client } = require('pg');
-const path = require('path');
-const fs = require('fs');
+import pkg from 'pg';
+const { Client } = pkg;
+import { fileURLToPath } from 'url';
+import path from 'path';
+import fs from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Since this script is run from the infrastructure directory, we need to use the correct path
 // to reach the shared directory which is at the project root

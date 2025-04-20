@@ -1,8 +1,7 @@
-// src/main/auth/AuthService.ts (Example Path)
-import { app, shell, net, session, BrowserWindow } from 'electron'; // Added net, session
+import { app, shell, net, session, BrowserWindow } from 'electron';
 import path from 'path';
 import fs from 'fs';
-// Removed crypto as we are not encrypting/decrypting the session token locally anymore
+import DatabaseService from '../data';
 
 // --- Store User Info locally if needed (optional caching) ---
 const USER_INFO_FILE = path.join(app.getPath('userData'), 'auth', 'user-info.json');
@@ -16,7 +15,6 @@ export class AuthService {
   private isLoading: boolean = true; // Start as loading
 
   // --- Keep track of the main window to send messages ---
-  // You need a way to set this from your main process setup
   private mainWindow: Electron.BrowserWindow | null = null;
 
   private constructor() {
@@ -24,6 +22,20 @@ export class AuthService {
     const authDir = path.dirname(USER_INFO_FILE);
     if (!fs.existsSync(authDir)) {
       fs.mkdirSync(authDir, { recursive: true });
+    }
+    // Try to load cached user info and notify instantly
+    if (fs.existsSync(USER_INFO_FILE)) {
+      try {
+        const user = JSON.parse(fs.readFileSync(USER_INFO_FILE, 'utf-8'));
+        if (user && user.id) {
+          this.currentUser = user;
+          this.authenticated = true;
+          this.isLoading = false;
+          this.notifyStatusChange(); // Notify renderer immediately on startup
+        }
+      } catch (e) {
+        console.error('Failed to load cached user info:', e);
+      }
     }
     console.log("AuthService initialized.");
   }
@@ -37,7 +49,6 @@ export class AuthService {
     return AuthService.instance;
   }
 
-  // --- Method to set the main window reference ---
   public setMainWindow(window: Electron.BrowserWindow | null) {
       this.mainWindow = window;
       // Immediately notify newly set window of current status
@@ -46,118 +57,100 @@ export class AuthService {
       }
   }
 
-  // --- NEW: Method to check auth status against the backend /me endpoint ---
   public async checkAuthStatus(): Promise<boolean> {
     console.log('AuthService: Checking auth status...');
     this.isLoading = true;
     this.notifyStatusChange(); // Notify loading start
 
-    const API_URL = process.env.VITE_API_URL || 'https://vihy6489c7.execute-api.us-west-2.amazonaws.com/stage'; // Ensure this is correct
+    const API_URL = process.env.API_URL;
+    if (!API_URL) {
+         console.error("API_URL environment variable not set! Cannot check auth status.");
+         this.isLoading = false;
+         this.notifyStatusChange();
+         this.authenticated = false; // Ensure state is false
+         return false;
+    }
+
+    const meUrl = `${API_URL}/api/users/me`;
 
     try {
-      // Use Electron's net module to ensure cookie handling from the default session
-      const request = net.request({
-          method: 'GET',
-          url: `${API_URL}/api/users/me`,
-          // Use the default session which *should* have the HttpOnly cookie if set correctly by the web flow for the API domain
-          session: session.defaultSession,
-          useSessionCookies: true, // Explicitly use session cookies
-      });
+        console.log(`AuthService: Sending request to ${meUrl}`);
+        const response = await net.fetch(meUrl, {
+            method: 'GET',
+            credentials: 'include',
+            headers: {
+                'Accept': 'application/json',
+            },
+        });
 
-      // Add necessary headers (Origin might not be strictly needed/possible from main process like this)
-      // request.setHeader('Content-Type', 'application/json');
-      // request.setHeader('Accept', 'application/json');
-      // request.setHeader('Origin', 'electron://app'); // Origin header might be restricted
+        console.log(`AuthService: /me response status: ${response.status}`);
 
-      let responseBody = '';
-      let statusCode = 0;
+        // Reset auth state before processing response
+        this.currentUser = null;
+        this.authenticated = false;
 
-      return new Promise<boolean>((resolve) => {
-          request.on('response', (response) => {
-              statusCode = response.statusCode;
-              console.log(`AuthService: /me response status: ${statusCode}`);
-              response.on('data', (chunk) => {
-                  responseBody += chunk;
-              });
-              response.on('end', () => {
-                  console.log('AuthService: /me response ended.');
-                  if (statusCode >= 200 && statusCode < 300) {
-                      try {
-                          const userData = JSON.parse(responseBody);
-                          console.log('AuthService: /me response data:', userData);
-                          // Accept either { user: { id, email } } or { id, email }
-                          let user = null;
-                          if (userData && userData.user && userData.user.id) {
-                              user = userData.user;
-                          } else if (userData && userData.id) {
-                              user = userData;
-                          }
-                          if (user && user.id) {
-                              this.currentUser = user;
-                              this.authenticated = true;
-                              console.log('AuthService: Authentication successful.', user.id);
-                              resolve(true);
-                          } else {
-                             console.error('AuthService: Invalid user data received from /me');
-                             this.currentUser = null;
-                             this.authenticated = false;
-                             resolve(false);
-                          }
-                      } catch (parseError) {
-                          console.error('AuthService: Failed to parse /me response:', parseError);
-                          resolve(false);
-                      }
-                  } else {
-                      console.log('AuthService: Authentication failed (non-2xx status).');
-                      resolve(false);
-                  }
-                  this.isLoading = false;
-                  this.notifyStatusChange(); // Notify loading end and status change
-              });
-              response.on('error', (error: Error) => {
-                   console.error('AuthService: /me response error:', error);
-                   this.isLoading = false;
-                   this.notifyStatusChange();
-                   resolve(false);
-              });
-          });
+        if (response.ok) { // Checks for 200-299 status
+            const userData = await response.json();
+            console.log('AuthService: /me response data:', userData);
 
-          request.on('error', (error: Error) => {
-              console.error('AuthService: /me request error:', error);
-                this.isLoading = false;
-              this.notifyStatusChange();
-              resolve(false);
-          });
+            // Process user data (handle different shapes)
+            let user = null;
+            if (userData?.user?.id) { // Optional chaining for safety
+                user = userData.user;
+            } else if (userData?.id) {
+                user = userData;
+            }
 
-          request.end(); // Send the request
-          console.log("AuthService: /me request sent.");
-      });
+            if (user) {
+                this.currentUser = user;
+                // Assuming DatabaseService is available and method is safe
+                DatabaseService.getInstance().upsertUserFromServer(user);
+                this.authenticated = true; // Set state AFTER successful processing
+                console.log('AuthService: Authentication successful.', user.id);
+
+                // Persist user info
+                try {
+                    fs.writeFileSync(USER_INFO_FILE, JSON.stringify(user), 'utf-8');
+                } catch (e) {
+                    console.error('Failed to persist user info:', e);
+                    // Decide if this failure should affect auth status
+                }
+            } else {
+                console.error('AuthService: Invalid user data received from /me');
+                // Auth state already set to false
+            }
+        } else {
+            console.log(`AuthService: Authentication failed (status: ${response.status}). Response: ${await response.text()}`);
+            // Auth state already set to false
+        }
 
     } catch (error) {
-      console.error('AuthService: Unexpected error in checkAuthStatus:', error);
-      this.isLoading = false;
-      this.notifyStatusChange();
-      return false;
+        console.error('AuthService: Error during fetch to /me:', error);
+        this.currentUser = null; // Ensure cleanup on error
+        this.authenticated = false;
+    } finally {
+        this.isLoading = false;
+        // Notify status change *after* potentially updating authenticated state
+        this.notifyStatusChange();
     }
-  }
+
+    // Return the final determined authentication state
+    return this.authenticated;
+}
 
   /**
    * --- MODIFIED: Initiate the OAuth flow via the WEBSITE ---
    */
   public async initiateOAuth(): Promise<void> {
     console.log('AuthService: Initiating OAuth via website...');
-    // URL of your website page that handles distinguishing electron vs web
     const websiteInitiationUrl = `${process.env.API_URL}/api/auth/login?from=electron`;
 
     try {
-      // Open the URL in the user's default system browser
       await shell.openExternal(websiteInitiationUrl);
       console.log(`AuthService: Opened external browser to ${websiteInitiationUrl}`);
     } catch (error) {
       console.error('AuthService: Failed to open external browser:', error);
-      // Handle error (e.g., show message to user)
     }
-    // Note: We no longer create an Electron authWindow or intercept navigation here.
   }
 
   /**

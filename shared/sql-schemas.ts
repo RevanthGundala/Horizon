@@ -3,6 +3,10 @@ export const SQL_SCHEMAS = {
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL,
+        first_name TEXT,
+        last_name TEXT,
+        profile_picture_url TEXT,
+        has_completed_onboarding INTEGER NOT NULL DEFAULT 0,
         created_at TEXT,
         updated_at TEXT
       );

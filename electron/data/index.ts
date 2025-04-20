@@ -983,19 +983,33 @@ class DatabaseService {
     this.db.close();
   }
 
-      // Add upsertUserFromServer if it doesn't exist from previous steps
-      upsertUserFromServer(user: any): void {
-        console.log(`[DB upsertUserFromServer] Upserting user ${user.id}`);
-         const stmt = this.db.prepare(`
-             INSERT INTO users (id, email /*, other fields... */)
-             VALUES (@id, @email /*, ... */)
-             ON CONFLICT(id) DO UPDATE SET
-                 email = excluded.email
-                 /*, update other fields */
-                 -- updated_at = CURRENT_TIMESTAMP
-         `);
-         stmt.run({ id: user.id, email: user.email /*, ... */ });
-     }
+  upsertUserFromServer(user: any): void {
+    console.log(`[DB upsertUserFromServer] Upserting user ${user.id}`);
+    const stmt = this.db.prepare(`
+      INSERT INTO users (
+        id, email, first_name, last_name, profile_picture_url, has_completed_onboarding, created_at, updated_at
+      ) VALUES (
+        @id, @email, @first_name, @last_name, @profile_picture_url, @has_completed_onboarding, @created_at, @updated_at
+      )
+      ON CONFLICT(id) DO UPDATE SET
+        email = excluded.email,
+        first_name = excluded.first_name,
+        last_name = excluded.last_name,
+        profile_picture_url = excluded.profile_picture_url,
+        has_completed_onboarding = excluded.has_completed_onboarding,
+        updated_at = excluded.updated_at
+    `);
+    stmt.run({
+      id: user.id,
+      email: user.email,
+      first_name: user.firstName || null,
+      last_name: user.lastName || null,
+      profile_picture_url: user.profilePictureUrl || null,
+      has_completed_onboarding: typeof user.hasCompletedOnboarding === 'boolean' ? (user.hasCompletedOnboarding ? 1 : 0) : (user.has_completed_onboarding ?? 0),
+      created_at: user.createdAt || new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    });
+  }
 }
 
 export default DatabaseService;

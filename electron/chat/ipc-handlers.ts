@@ -1,6 +1,6 @@
 // Create new file: chat/ipc-handlers.ts
 
-import { ipcMain } from 'electron';
+import { ipcMain, session, net } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
 import { AuthService } from '../auth'; // Adjust path
 import { ChatService } from './index'; // Adjust path
@@ -12,150 +12,213 @@ const chatService = ChatService.getInstance();
 export function setupChatIpcHandlers(): void {
 
     ipcMain.handle('chat:send-user-message', async (event, messageData: { threadId: string; content: string }) => {
+        // --- Initial Setup ---
         console.log('[IPC chat:send-user-message] Received:', messageData);
-        const mainWindow = getMainWindowWebContents(); // Get webContents
+        const mainWindow = getMainWindowWebContents(); // Get webContents AT THE START
         const userId = authService.getUserId();
-        if (!userId || !mainWindow) {
-            console.error('[IPC chat:send-user-message] Auth/Window Error. UserID:', userId, 'Window:', !!mainWindow);
-            return { success: false, error: 'User not authenticated or window not found' };
+    
+        // Initial checks
+        if (!userId) {
+            console.error('[IPC chat:send-user-message] Error: User not authenticated.');
+            return { success: false, error: 'User not authenticated' };
         }
-
-        const messageId = uuidv4();
-        let savedMessageTimestamp: string | undefined;
-
+        if (!mainWindow || mainWindow.isDestroyed()) { // Check validity early
+             console.error('[IPC chat:send-user-message] Error: Main window not available or destroyed.');
+             return { success: false, error: 'Main window not available' };
+        }
+        const apiUrl = process.env.API_URL; // Moved URL check higher
+         if (!apiUrl) {
+             console.error("API_URL is not configured.");
+             // No need to update DB status here, just return error
+             return { success: false, error: "API URL not configured" };
+         }
+         const chatUrl = `${apiUrl}/api/chat`; // Define chatUrl here
+    
+        // Save user message
+        const savedMessage = chatService.upsertChatMessage({
+            id: uuidv4(),
+            threadId: messageData.threadId,
+            role: 'user',
+            content: messageData.content,
+            userId: userId,
+            timestamp: new Date().toISOString(),
+            syncStatus: 'sending_stream'
+        });
+        const messageId = savedMessage.id;
+        const savedMessageTimestamp = savedMessage.timestamp;
+    
+        let assistantMessageId: string | null = null; // Define here for broader scope in case of errors
+        let timeoutId: ReturnType<typeof setTimeout> | undefined; // Declare optional timeoutId for cleanup
+    
         try {
-            // Save user message locally immediately
-             const savedInfo = chatService.upsertChatMessage({ // Use upsert
-                id: messageId,
-                threadId: messageData.threadId,
-                role: 'user',
-                content: messageData.content,
-                userId: userId,
-                syncStatus: 'sending_stream' // Mark as attempting stream
-            });
-            savedMessageTimestamp = savedInfo.timestamp;
-            console.log(`[IPC chat:send-user-message] User message ${messageId} saved locally.`);
-
-            // --- Attempt Streaming Response ---
-            const chatUrl = process.env.CHAT_URL || '';
-            if (!chatUrl) {
-                 console.error("CHAT_URL is not configured. Cannot attempt streaming.");
-                 chatService.updateChatMessageStatus(messageId, 'error', 'Chat URL not configured'); // Fallback status
-                throw new Error("Chat URL not configured");
+            // --- Authentication Check ---
+            // Optional: Check local state first as a quick fail, but Lambda will re-check
+            if (!authService.isAuthenticated()) {
+                 console.error("Not authenticated according to AuthService state. Aborting chat request.");
+                 chatService.updateChatMessageStatus(messageId, 'error', 'Not Authenticated'); // Keep DB update here
+                 // No need to throw, just return failure
+                 return { success: false, error: "Not authenticated" };
             }
-
-           // --- MODIFIED AUTHENTICATION CHECK ---
-// Check the current authentication state known by AuthService
-if (!authService.isAuthenticated()) {
-    // Handle the case where the Electron app knows the user isn't authenticated
-    console.error("Not authenticated according to AuthService state. Aborting chat request.");
-    chatService.updateChatMessageStatus(messageId, 'error', 'Not Authenticated');
-    throw new Error("Not authenticated for streaming");
-} 
-
+    
+            // --- Prepare Fetch ---
             const messageHistory = chatService.getMessageHistoryForContext(messageData.threadId);
-             // Ensure the current user message isn't duplicated in history if context includes it
             const historyWithoutCurrent = messageHistory.filter(m => !(m.role === 'user' && m.content === messageData.content));
             historyWithoutCurrent.push({ role: 'user', content: messageData.content });
-
+    
             const abortController = new AbortController();
-            const timeoutId = setTimeout(() => abortController.abort(), 30000);
-
-            console.log(`[IPC chat:send-user-message] Attempting stream fetch to ${chatUrl}`);
-            const response = await fetch(chatUrl, { 
+            timeoutId = setTimeout(() => abortController.abort('timeout'), 30000); // Add reason
+    
+            console.log(`[IPC chat:send-user-message] Attempting fetch to ${chatUrl}`);
+    
+            // --- Fetch Call ---
+            const response = await net.fetch(chatUrl, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    messages: historyWithoutCurrent,
-                }),
-                credentials: 'include'
-            }); // As defined before
-
-            clearTimeout(timeoutId);
-
-            if (!response.ok) { throw new Error(`Stream request failed (${response.status})`); }
-            if (!response.body) { throw new Error(`Stream response empty`); }
-
-             console.log(`[IPC chat:send-user-message] Stream fetch succeeded for ${messageId}. Reading chunks...`);
-             const reader = response.body.getReader();
-             const decoder = new TextDecoder();
-             let assistantMessageId: string | null = null;
-             let accumulatedContent = '';
-             let firstChunk = true; // Flag to create assistant message in DB
-
-             try {
-                 while (true) {
-                     const { done, value } = await reader.read();
-                     if (done) break;
-                     const chunk = decoder.decode(value, { stream: true });
-                     accumulatedContent += chunk;
-
-                     // Create DB entry on *first* chunk
-                     if (firstChunk) {
-                         firstChunk = false;
-                         assistantMessageId = uuidv4();
-                          chatService.upsertChatMessage({ // Use upsert
-                             id: assistantMessageId,
-                             threadId: messageData.threadId,
-                             role: 'assistant',
-                             content: chunk, // Start with first chunk
-                             userId: userId,
-                             syncStatus: 'sending_stream', // Mark as streaming initially
-                             relatedUserMessageId: messageId,
-                             timestamp: new Date().toISOString()
-                         });
-                         console.log(`[IPC chat:send-user-message] Created temp assistant message ${assistantMessageId} in DB.`);
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: historyWithoutCurrent }),
+                signal: abortController.signal,
+                credentials: 'include',
+            });
+            if (timeoutId) { clearTimeout(timeoutId); } // Only clear if assigned
+    
+            console.log(`[IPC chat:send-user-message] Fetch status: ${response.status}`);
+    
+            if (!response.ok) {
+                let errorBody = `HTTP ${response.status}`;
+                try { errorBody = await response.text(); } catch { /* ignore */ }
+                throw new Error(`Workspace failed: ${response.status} - ${errorBody}`); // Throw specific error
+            }
+            if (!response.body) {
+                throw new Error("Fetch response received without a body.");
+            }
+    
+            // --- Stream Reading ---
+            console.log(`[IPC chat:send-user-message] Fetch succeeded for ${messageId}. Reading stream...`);
+            let accumulatedContent = '';
+            let firstChunk = true;
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let streamErrorOccurred = false; // Flag to manage flow after stream error
+    
+            while (true) {
+                try {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        console.log('[IPC chat:send-user-message] Fetch stream ended normally.');
+                        break; // Exit loop
+                    }
+    
+                    const chunkStr = decoder.decode(value, { stream: true });
+                    console.log('[IPC chat:send-user-message] Received chunk:', chunkStr); // Keep for debugging
+                    accumulatedContent += chunkStr;
+    
+                    // Ensure window still valid before sending IPC messages
+                    if (!mainWindow || mainWindow.isDestroyed()) {
+                        console.error("[IPC] Window destroyed during stream processing. Aborting IPC sends.");
+                        streamErrorOccurred = true; // Treat as an error state
+                        break; // Exit loop
+                    }
+    
+                    if (firstChunk) {
+                        firstChunk = false;
+                        assistantMessageId = uuidv4();
+                        // Save initial chunk to DB
+                        chatService.upsertChatMessage({
+                            id: assistantMessageId,
+                            threadId: messageData.threadId,
+                            role: 'assistant',
+                            content: chunkStr,
+                            userId: userId,
+                            timestamp: new Date().toISOString(),
+                            syncStatus: 'sending_stream'
+                        });
+    
+                        // Send 'NEW MESSAGE + FIRST CHUNK' TO RENDERER
+                        const payload = { assistantMessageId, firstChunk: chunkStr, relatedUserMessageId: messageId, threadId: messageData.threadId };
+                        console.log('[IPC Check & Send] Sending chat:new-assistant-message. Payload:', payload); // Check + Payload Log
+                        mainWindow.send('chat:new-assistant-message', payload);
+    
+                    } else {
+                        if (assistantMessageId) {
+                            // Update DB entry
+                            chatService.upsertChatMessage({
+                                id: assistantMessageId,
+                                threadId: messageData.threadId,
+                                role: 'assistant',
+                                content: chunkStr,
+                                userId: userId,
+                                timestamp: new Date().toISOString(),
+                                syncStatus: 'sending_stream'
+                            });
+    
+                            // Send 'SUBSEQUENT CHUNK' TO RENDERER
+                            // *** FIX: Include threadId ***
+                            const payload = { assistantMessageId, chunk: chunkStr, threadId: messageData.threadId };
+                            console.log('[IPC Check & Send] Sending chat:stream-chunk. Payload:', payload); // Check + Payload Log
+                            mainWindow.send('chat:stream-chunk', payload);
+                        }
+                    }
+                } catch (streamReadError) {
+                    console.error("[IPC chat:send-user-message] Error reading fetch stream chunk:", streamReadError);
+                    streamErrorOccurred = true; // Set flag
+                     // Send error to renderer ONCE
+                     if (mainWindow && !mainWindow.isDestroyed()) {
+                         const errorMsg = streamReadError instanceof Error ? streamReadError.message : 'Stream read error';
+                         const payload = { relatedUserMessageId: messageId, assistantMessageId, error: errorMsg, threadId: messageData.threadId };
+                         console.log('[IPC Check & Send] Sending chat:stream-error. Payload:', payload);
+                         mainWindow.send('chat:stream-error', payload);
                      }
-
-                     // Send chunk to renderer
-                     mainWindow.send('chat:chunk', {
-                         threadId: messageData.threadId,
-                         relatedUserMessageId: messageId,
-                         assistantMessageId: assistantMessageId, // Pass ID being built
-                         chunk: chunk
-                     });
+                     // Don't rethrow here, just break the loop
+                     break;
+                }
+            } // End while loop
+    
+            // --- Finalization ---
+            reader.releaseLock(); // Release reader lock
+    
+             // Finalize DB records IF no error occurred during streaming
+             if (!streamErrorOccurred && assistantMessageId) {
+                chatService.finalizeAssistantMessageContent(assistantMessageId, accumulatedContent);
+                console.log(`[IPC chat:send-user-message] Finalized assistant message ${assistantMessageId}.`);
+                // Send END event
+                 if (mainWindow && !mainWindow.isDestroyed()) {
+                     const payload = { assistantMessageId, threadId: messageData.threadId }; // Add threadId for consistency?
+                     console.log('[IPC Check & Send] Sending chat:stream-end. Payload:', payload);
+                     mainWindow.send('chat:stream-end', payload);
                  }
-
-                 // Stream finished successfully - finalize DB records
-                 if (assistantMessageId) {
-                     chatService.finalizeAssistantMessageContent(assistantMessageId, accumulatedContent);
-                     console.log(`[IPC chat:send-user-message] Finalized assistant message ${assistantMessageId}.`);
-                 } else {
-                     // Handle case where stream ended but no content/chunks were received? Maybe error?
-                     console.warn(`[IPC chat:send-user-message] Stream ended for ${messageId} but no assistant message ID was created.`);
+            } else if (!streamErrorOccurred && !assistantMessageId) {
+                // Stream ended normally but no chunks received
+                console.warn(`[IPC chat:send-user-message] Stream ended for ${messageId} but no data/assistant message was processed.`);
+                 if (mainWindow && !mainWindow.isDestroyed()) {
+                     const payload = { assistantMessageId: null, threadId: messageData.threadId };
+                     console.log('[IPC Check & Send] Sending chat:stream-end (no data). Payload:', payload);
+                     mainWindow.send('chat:stream-end', payload);
                  }
-                 chatService.markUserMessageSynced(messageId); // Mark user message synced
-
-                 mainWindow.send('chat:end', { relatedUserMessageId: messageId, assistantMessageId });
-
-             } catch (streamReadError: unknown) { 
-                 // Type guard to check if error is an Error object
-                 const errorMessage = streamReadError instanceof Error 
-                     ? streamReadError.message 
-                     : typeof streamReadError === 'string'
-                         ? streamReadError
-                         : 'An unknown error occurred during stream reading';
-
-                 console.error(`[IPC chat:send-user-message] Error reading stream for ${messageId}:`, errorMessage);
-                 chatService.updateChatMessageStatus(messageId, 'error', errorMessage);
-                 mainWindow.send('chat:error', { 
-                     relatedUserMessageId: messageId, 
-                     error: errorMessage 
-                 });
+            }
+            // If streamErrorOccurred, the stream-error event was already sent. Don't send stream-end.
+    
+            // Mark user message synced (do this even if assistant message had errors?)
+            chatService.markUserMessageSynced(messageId);
+            return { success: true, messageId, timestamp: savedMessageTimestamp }; // Return success if fetch succeeded initially
+    
+        } catch (error) { // Catch errors from setup, fetch call, or rethrown stream errors (if not handled above)
+             if (timeoutId) { clearTimeout(timeoutId); } // Only clear if assigned
+             const errorMessage = error instanceof Error ? error.message : 'Unknown error during chat processing';
+             console.error(`[IPC chat:send-user-message] Overall error for ${messageId}:`, errorMessage, error); // Log full error
+    
+             // Ensure renderer knows about the error if it happened before stream started
+             if (mainWindow && !mainWindow.isDestroyed()) {
+                  // Check if stream-error was already sent inside the loop
+                  // This logic might need refinement depending on desired error reporting
+                  // Maybe send a generic 'chat:fatal-error' ?
+                  // For now, let's rely on the stream-error event or the return value
              }
-             finally { /* ... reader.cancel ... */ }
-
-            return { success: true, messageId, timestamp: savedMessageTimestamp };
-
-        } catch (error: any) { 
-            console.error(`[IPC chat:send-user-message] General error for ${messageId}:`, error);
-            chatService.updateChatMessageStatus(messageId, 'error', error.message);
-            mainWindow.send('chat:error', { relatedUserMessageId: messageId, error: error.message });
-            return { success: false, messageId, timestamp: savedMessageTimestamp };
+    
+             // Update DB status
+             chatService.updateChatMessageStatus(messageId, 'error', errorMessage);
+             return { success: false, messageId, timestamp: savedMessageTimestamp, error: errorMessage }; // Return failure
         }
-    });
+    }); // End ipcMain.handle 
+
 
     ipcMain.handle('chat:get-messages', async (event, threadId: string) => {
          try {
