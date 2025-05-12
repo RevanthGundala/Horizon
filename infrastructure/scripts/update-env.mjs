@@ -22,13 +22,12 @@ const electronEnvFilePath = path.join(projectRoot, 'electron', `.env.${appEnv}`)
 // Mapping for output keys to environment variable names
 const outputKeyMapping = {
   cloudfrontDomain: 'API_URL',
-  chatFunctionUrlOutput: 'CHAT_URL'
 };
 
 // List of public config keys that should be exposed to the frontend with VITE_ prefix
 const publicConfigKeys = [
   'API_URL',
-  'CHAT_URL', 
+  'FRONTEND_URL',
   'WORKOS_CLIENT_ID'
 ];
 
@@ -61,13 +60,10 @@ const writeEnvFile = (filePath, isVite = false) => {
   outputs[outputKeyMapping.cloudfrontDomain] = `https://${cloudfrontDomain}`;
   console.log(`Retrieved CloudFront domain: ${outputs[outputKeyMapping.cloudfrontDomain]}`);
 
-  // Get Chat Function URL endpoint
-  outputs[outputKeyMapping.chatFunctionUrlOutput] = execSync('pulumi stack output chatFunctionUrlOutput', { encoding: 'utf8' }).trim();
-  console.log(`Retrieved Chat Function URL: ${outputs[outputKeyMapping.chatFunctionUrlOutput]}`);
-
   // Get other Pulumi config values
   for (const key of publicConfigKeys) {
-    if (key !== 'API_URL' && key !== 'CHAT_URL') {
+    // Skip API_URL since it's set via cloudfrontDomain output
+    if (key !== 'API_URL') {
       try {
         const value = execSync(`pulumi config get horizon-infrastructure:${key}`, { encoding: 'utf8' }).trim();
         outputs[key] = value;

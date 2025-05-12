@@ -1,7 +1,7 @@
 import { Client } from 'pg';
 import { v4 as uuidv4 } from 'uuid';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { createHeaders, handleOptions } from '../utils/middleware';
+import { createHeaders, handleOptions } from '../utils/helpers';
 import Redis from "ioredis"
 import * as crypto from 'crypto';
 

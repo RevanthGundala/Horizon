@@ -2,6 +2,8 @@ import { app, shell, net, session, BrowserWindow } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import DatabaseService from '../data';
+import { base64UrlEncode, generateRandomString, getAccessToken, getRefreshToken, setStore, sha256 } from '../utils/helpers';
+import { exec } from 'child_process';
 
 // --- Store User Info locally if needed (optional caching) ---
 const USER_INFO_FILE = path.join(app.getPath('userData'), 'auth', 'user-info.json');
@@ -58,32 +60,18 @@ export class AuthService {
   }
 
   public async checkAuthStatus(): Promise<boolean> {
-    console.log('AuthService: Checking auth status...');
     this.isLoading = true;
     this.notifyStatusChange(); // Notify loading start
 
-    const API_URL = process.env.API_URL;
-    if (!API_URL) {
-         console.error("API_URL environment variable not set! Cannot check auth status.");
-         this.isLoading = false;
-         this.notifyStatusChange();
-         this.authenticated = false; // Ensure state is false
-         return false;
-    }
-
-    const meUrl = `${API_URL}/api/users/me`;
-
+    const meUrl = `${process.env.API_URL}/api/auth/me`;
+    const accessToken = getAccessToken();
     try {
-        console.log(`AuthService: Sending request to ${meUrl}`);
         const response = await net.fetch(meUrl, {
             method: 'GET',
-            credentials: 'include',
             headers: {
-                'Accept': 'application/json',
+                'Authorization': `Bearer ${accessToken}`
             },
         });
-
-        console.log(`AuthService: /me response status: ${response.status}`);
 
         // Reset auth state before processing response
         this.currentUser = null;
@@ -91,7 +79,6 @@ export class AuthService {
 
         if (response.ok) { // Checks for 200-299 status
             const userData = await response.json();
-            console.log('AuthService: /me response data:', userData);
 
             // Process user data (handle different shapes)
             let user = null;
@@ -106,7 +93,6 @@ export class AuthService {
                 // Assuming DatabaseService is available and method is safe
                 DatabaseService.getInstance().upsertUserFromServer(user);
                 this.authenticated = true; // Set state AFTER successful processing
-                console.log('AuthService: Authentication successful.', user.id);
 
                 // Persist user info
                 try {
@@ -120,12 +106,10 @@ export class AuthService {
                 // Auth state already set to false
             }
         } else {
-            console.log(`AuthService: Authentication failed (status: ${response.status}). Response: ${await response.text()}`);
             // Auth state already set to false
         }
 
     } catch (error) {
-        console.error('AuthService: Error during fetch to /me:', error);
         this.currentUser = null; // Ensure cleanup on error
         this.authenticated = false;
     } finally {
@@ -138,24 +122,52 @@ export class AuthService {
     return this.authenticated;
 }
 
-  /**
-   * --- MODIFIED: Initiate the OAuth flow via the WEBSITE ---
-   */
-  public async initiateOAuth(): Promise<void> {
-    console.log('AuthService: Initiating OAuth via website...');
-    const websiteInitiationUrl = `${process.env.API_URL}/api/auth/login?from=electron`;
-
+public async initiateOAuth(): Promise<void> {
     try {
-      await shell.openExternal(websiteInitiationUrl);
-      console.log(`AuthService: Opened external browser to ${websiteInitiationUrl}`);
-    } catch (error) {
-      console.error('AuthService: Failed to open external browser:', error);
+    const codeVerifier = generateRandomString(128); // Generate a 128-char random string
+
+    // 2. Generate Code Challenge
+    const hashed = await sha256(codeVerifier);
+    const codeChallenge = base64UrlEncode(hashed);
+
+    // 3. Generate State
+    const state = generateRandomString(32); // Generate a 32-char random string for state
+
+    // 4. Store Verifier and State in AuthService instance
+    setStore('codeVerifier', codeVerifier);
+    setStore('state', state);
+
+    const clientId = process.env.WORKOS_CLIENT_ID;
+    if (!clientId) {
+      console.error('Missing WORKOS_CLIENT_ID env var');
+      return;
     }
+    const redirectUri = process.env.FRONTEND_URL + '/loginDeepUrl';
+    const workosAuthorizeUrl = 'https://api.workos.com/user_management/authorize';
+
+    // 6. Construct URL Parameters
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      state: state, // Use the generated state
+      // PKCE Parameters
+      provider: 'authkit', // Or the specific provider/connection if needed
+      code_challenge: codeChallenge, // Use the generated challenge
+      code_challenge_method: 'S256',
+    });
+    
+    // 7. Construct Final URL
+    const authorizationUrl = `${workosAuthorizeUrl}?${params.toString()}`;
+
+    // 8. Redirect User
+    console.log('Constructed WorkOS Authorization URL:', authorizationUrl);
+    app.isPackaged ? await shell.openExternal(authorizationUrl) : exec(`open -a "Arc" "${authorizationUrl}"`);
+  } catch (error) {
+    console.error('AuthService: Failed to open external browser:', error);
+  }
   }
 
-  /**
-   * --- MODIFIED: Logout ---
-   */
   public async logout(): Promise<void> {
     console.log('AuthService: Logging out...');
     const wasAuthenticated = this.authenticated;
@@ -163,7 +175,7 @@ export class AuthService {
     this.authenticated = false;
 
     // Notify backend to clear the HttpOnly cookie
-    const API_URL = process.env.VITE_API_URL || 'https://vihy6489c7.execute-api.us-west-2.amazonaws.com/stage';
+    const API_URL = process.env.API_URL || 'https://vihy6489c7.execute-api.us-west-2.amazonaws.com/stage';
     try {
         console.log("AuthService: Calling backend logout...");
         const request = net.request({

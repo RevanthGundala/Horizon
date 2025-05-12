@@ -3,10 +3,9 @@ import { AuthService } from '../auth'; // Adjust path
 import DatabaseService, { Note, Block } from '../data'; // Adjust path
 import crypto from 'crypto';
 import { getMainWindowWebContents } from '../main';
-import { SYNC_INTERVAL_MS } from '../constants';
-
-// --- Configuration ---
-const API_URL = process.env.VITE_API_URL || process.env.API_URL || 'https://vihy6489c7.execute-api.us-west-2.amazonaws.com/stage';
+import { SYNC_INTERVAL_MS } from '../utils/constants';
+import { net } from 'electron';
+import { getAccessToken } from '../utils/helpers';
 
 // ============================================================================
 // Sync Service Class
@@ -72,7 +71,13 @@ export class SyncService {
          try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000);
-            const response = await fetch(`${API_URL}/api/status`, { method: 'GET', signal: controller.signal, cache: 'no-store' });
+            const accessToken = getAccessToken();
+            const response = await net.fetch(`${process.env.API_URL}/api/status`, {
+                method: 'GET',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+                signal: controller.signal,
+                cache: 'no-store'
+            });
             clearTimeout(timeoutId);
             this.isOnline = response.ok;
             if(!response.ok) console.warn(`[SyncService] API status check failed: ${response.status}`);
@@ -137,7 +142,7 @@ if (!authService.isAuthenticated()) {
                  try {
                      const workspaceHashes = await this.getWorkspaceHashes(); // Now uses workspaces table
                      if (Object.keys(workspaceHashes).length > 0) {
-                         const statusResponse = await fetch(`${API_URL}/api/sync/status`, {
+                         const statusResponse = await fetch(`${process.env.API_URL}/api/sync/status`, {
                              method: 'POST',
                              headers: { 'Content-Type': 'application/json' },
                              body: JSON.stringify({ workspace_hashes: workspaceHashes }),
@@ -189,7 +194,7 @@ if (!authService.isAuthenticated()) {
         if (changes.length === 0) return;
 
         try {
-            const response = await fetch(`${API_URL}/api/sync/push`, { credentials: 'include' });
+            const response = await fetch(`${process.env.API_URL}/api/sync/push`, { credentials: 'include' });
             if (!response.ok) throw new Error(`Failed to push changes: ${response.status} ${response.statusText}`);
             const result = await response.json();
             for (const log of syncLogs) { /* ... update log status based on result.conflicts ... */ }
@@ -212,7 +217,7 @@ if (!authService.isAuthenticated()) {
     private async pullWorkspaceData(workspaceId: string): Promise<void> {
         console.log(`[SyncService Pull] Pulling workspace ${workspaceId}...`);
         try {
-            const response = await fetch(`${API_URL}/api/sync/pull`, {
+            const response = await fetch(`${process.env.API_URL}/api/sync/pull`, {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },

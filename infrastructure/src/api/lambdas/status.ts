@@ -1,6 +1,6 @@
 import * as aws from "@pulumi/aws";
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { createHeaders, handleOptions } from "../utils/middleware";
+import { createHeaders, handleOptions } from "../utils/helpers";
 
 /**
  * Simple status endpoint that returns a 200 OK response

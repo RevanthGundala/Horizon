@@ -1,90 +1,35 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import * as aws from "@pulumi/aws";
-import { Client } from "pg";
-import { parseCookies, createHeaders, handleOptions, setCookie, isAuthSuccess } from "../utils/middleware";
-import { AuthenticateWithSessionCookieSuccessResponse, WorkOS } from "@workos-inc/node";
+import { createHeaders, handleOptions, getPool, getUserId } from "../utils/helpers";
+import { WorkOS } from "@workos-inc/node";
+import { URL } from 'url';
 
-// --- Unified Login Initiator ---
-const loginHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event) => {
-  if (event.httpMethod === "OPTIONS") {
-      return handleOptions(event); // Handles CORS Preflight
-  }
-
-  const clientId = process.env.WORKOS_CLIENT_ID || "";
-  const workosApiKey = process.env.WORKOS_API_KEY || "";
-  const frontendUrl = process.env.FRONTEND_URL || ""; // Your WEBSITE base URL (e.g., https://your-website.com)
-
-  // --- Get the desired FINAL web callback URL from query param ---
-  // This is sent by your website's /auth/initiate page
-  const from = event.queryStringParameters?.from;
-  const state = encodeURIComponent(JSON.stringify({ redirect: from }));
-
-  // --- Check if finalRedirectUri is registered in WorkOS ---
-  // You MUST add finalRedirectUri (both electron and standard versions) to your WorkOS allowed list!
-
-  if (!clientId || !workosApiKey || !frontendUrl) {
-      console.error("WorkOS config missing in environment variables.");
-      return { statusCode: 500, headers: createHeaders(), body: JSON.stringify({ error: "Server configuration error" }) };
-  }
-
-  try {
-      const workos = new WorkOS(workosApiKey, { clientId });
-
-      const redirectUri = from === "electron" ? `${frontendUrl}/loginDeepUrl` : `${process.env.API_URL}/api/auth/callback`;
-      console.log(`Redirecting to WorkOS Auth URL with callback to: ${redirectUri}`);
-
-      const authorizationUrl = workos.userManagement.getAuthorizationUrl({
-          provider: 'authkit',
-          redirectUri, // Use the validated website callback URL
-          clientId,
-          // Consider adding a 'state' parameter for CSRF protection during OAuth flow
-          state,
-        });
-
-      console.log(`Redirecting to WorkOS Auth URL with callback to: ${authorizationUrl}`);
-
-      // Return 302 Redirect to WorkOS
-      return {
-          statusCode: 302,
-          headers: {
-              "Location": authorizationUrl,
-              // CORS headers might not be strictly needed on a 302, but can be included via createHeaders if desired
-              ...createHeaders(event.headers.origin || event.headers.Origin), // Add CORS if needed
-          },
-          body: ""
-      };
-  } catch (error) {
-      console.error('Error generating WorkOS authorization URL:', error);
-      return {
-          statusCode: 500,
-          headers: createHeaders(event.headers.origin || event.headers.Origin), // Include CORS
-          body: JSON.stringify({ error: 'Failed to initiate login', details: error instanceof Error ? error.message : String(error) }),
-      };
-  }
-};
 
 
 // --- Refactored Callback Handler ---
-const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event) => {
+const tokenHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayProxyResult> = async (event) => {
+  console.log("Token handler reached")
   if (event.httpMethod === "OPTIONS") {
       return handleOptions(event); // Handles CORS Preflight
   }
 
-  const code = event.queryStringParameters?.code;
-  const state = JSON.parse(decodeURIComponent(event.queryStringParameters?.state || "{}"));
-  console.log("Callback state:", state);
+
+
+  const origin = event.headers.origin || event.headers.Origin; // For CORS headers
+
+  const body = event.body ? JSON.parse(event.body) : {};
+  const { code, from } = body;
+
   const clientId = process.env.WORKOS_CLIENT_ID || "";
   const workosApiKey = process.env.WORKOS_API_KEY || "";
-  const cookiePassword = process.env.WORKOS_COOKIE_PASSWORD || "";
   const dbUrl = process.env.DB_URL || "";
-  const origin = event.headers.origin || event.headers.Origin; // For CORS headers
 
   if (!code) {
       console.error("Callback Error: Missing code query parameter.");
       return { statusCode: 400, headers: createHeaders(origin), body: JSON.stringify({ error: "Missing required parameters" }) };
   }
 
-  if (!clientId || !workosApiKey || !cookiePassword || !dbUrl) {
+  if (!clientId || !workosApiKey || !dbUrl) {
       console.error("WorkOS/DB config missing in environment variables for callback.");
       return { statusCode: 500, headers: createHeaders(origin), body: JSON.stringify({ error: "Server configuration error" }) };
   }
@@ -93,62 +38,63 @@ const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayP
   try {
       const workos = new WorkOS(workosApiKey, { clientId });
 
-      const { user, sealedSession } = await workos.userManagement.authenticateWithCode({
+      const { user, accessToken, refreshToken } = await workos.userManagement.authenticateWithCode({
         code,
         clientId,
-        session: { 
-          sealSession: true,
-          cookiePassword: cookiePassword,
-        },
       });
 
       console.log(`🔍 AUTH CALLBACK - Success for user: ${user.id} (${user.email})`);
 
       // --- Database Logic (Keep your existing logic) ---
-      const client = new Client({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } });
-      await client.connect();
-      try {
-           const existingUser = await client.query("SELECT * FROM users WHERE email = $1", [user.email]);
-           if (existingUser.rows.length === 0) {
-               console.log('Creating new user in DB:', user.email);
-               await client.query(
-                 `INSERT INTO users (id, email, first_name, last_name, profile_picture_url, has_completed_onboarding) VALUES ($1, $2, $3, $4, $5, $6)`,
-                 [
-                   user.id,
-                   user.email,
-                   user.firstName || null,
-                   user.lastName || null,
-                   user.profilePictureUrl || null,
-                   0
-                 ]
-               );
-           } else {
-               // Optionally update user profile fields if changed
-               await client.query(
-                 `UPDATE users SET first_name = $1, last_name = $2, profile_picture_url = $3 WHERE id = $4`,
-                 [
-                   user.firstName || null,
-                   user.lastName || null,
-                   user.profilePictureUrl || null,
-                   user.id
-                 ]
-               );
-               console.log('User already exists in DB, updated profile fields:', user.email);
-           }
-      } finally {
-          await client.end();
-      }
-      // --- End Database Logic ---
+      // Upsert user record: insert or update existing based on email
+      await getPool().query(
+        `
+        INSERT INTO users (
+            id,
+            email,
+            first_name,
+            last_name,
+            profile_picture_url,
+            has_completed_onboarding
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (email) DO UPDATE SET
+            first_name = EXCLUDED.first_name,
+            last_name = EXCLUDED.last_name,
+            profile_picture_url = EXCLUDED.profile_picture_url
+        `,
+        [
+            user.id,
+            user.email,
+            user.firstName || null,
+            user.lastName || null,
+            user.profilePictureUrl || null,
+            0
+        ]
+      );
 
-
-      return setCookie({
-        sealedSession,
-        origin,
-        user,
-        event,
-        code,
-        state,
-      });
+    if (from?.redirect === "electron") {
+      return {
+        statusCode: 200,
+        headers: createHeaders(origin),
+        body: JSON.stringify({ accessToken, refreshToken }),
+      };
+    }
+    // Redirect user back to website if request is from web
+  // return {
+  //   statusCode: 302,
+  //   headers: {
+  //     "Location": `${frontendUrl}/settings`,
+  //     "Access-Control-Allow-Origin": origin || "http://localhost:5173",
+  //     "Access-Control-Allow-Credentials": "true",
+  //     "Access-Control-Expose-Headers": "Set-Cookie",
+  //   },
+  //   body: "",
+  // };
+  return {
+    statusCode: 500,
+    headers: createHeaders(origin),
+    body: JSON.stringify({ success: false, error: 'Failed to redirect user' }),
+  };
 
   } catch (error) {
       console.error('Authentication callback error:', error);
@@ -157,6 +103,93 @@ const callbackHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayP
           statusCode: 500, // Or 400/401 depending on the error type
           headers: createHeaders(origin), // Include CORS
           body: JSON.stringify({ success: false, error: 'Authentication failed', details: error instanceof Error ? error.message : String(error) })
+      };
+  }
+};
+
+// Handler that returns user data (protected by auth)
+const meHandler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  // STEP 1: Extract JWT from Authorization header
+  const authHeader = event.headers.Authorization || event.headers.authorization;
+  let token: string | null = null;
+
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7); // Remove 'Bearer ' prefix
+  }
+
+  if (!token) {
+      console.log("No JWT found in Authorization header.");
+      return {
+          statusCode: 401,
+          headers: createHeaders(),
+          body: JSON.stringify({ error: "Unauthorized: Missing bearer token." }),
+      };
+  }
+
+  const clientId = process.env.WORKOS_CLIENT_ID;
+  if (!clientId) {
+      console.error("WORKOS_CLIENT_ID environment variable is not set.");
+      return {
+          statusCode: 500, 
+          headers: createHeaders(),
+          body: JSON.stringify({ error: "Internal server configuration error." }),
+      };
+  }
+
+  try {
+      const userId = await getUserId(token);
+      if (!userId) {
+          console.error("JWT validated but 'sub' (User ID) claim is missing.");
+          return {
+              statusCode: 401,
+              headers: createHeaders(),
+              body: JSON.stringify({ error: "Unauthorized: Invalid token claims." }),
+          };
+      } 
+
+      console.log(`JWT validated successfully for user ID: ${userId}`);
+
+      // STEP 5: Query YOUR database using the validated User ID
+      const result = await getPool().query(
+          "SELECT id, email, first_name, last_name, profile_picture_url, has_completed_onboarding FROM users WHERE id = $1",
+          [userId]
+      );
+
+      if (result.rows.length === 0) {
+          console.error(`User with validated ID ${userId} not found in the database.`);
+          return {
+              statusCode: 404,
+              headers: createHeaders(),
+              body: JSON.stringify({ error: "User not found in application database" }),
+          };
+      }
+
+      const dbUser = result.rows[0];
+
+      // STEP 6: Return the user data from your database
+      return {
+          statusCode: 200,
+          headers: createHeaders(),
+          body: JSON.stringify({
+              user: {
+                  id: dbUser.id,
+                  email: dbUser.email,
+                  firstName: dbUser.first_name,
+                  lastName: dbUser.last_name,
+                  profilePictureUrl: dbUser.profile_picture_url,
+                  hasCompletedOnboarding: dbUser.has_completed_onboarding
+              }
+          }),
+      };
+
+  } catch (error: any) {
+      // Catch JWT validation errors (expired, invalid signature, wrong issuer/audience)
+      // or other errors
+      console.error("Error during JWT validation or processing:", error.message || error);
+      return {
+          statusCode: 401, // Typically 401 for authentication/token validation errors
+          headers: createHeaders(),
+          body: JSON.stringify({ error: `Unauthorized: ${error.message}` }), // Provide specific error in logs, generic one to client
       };
   }
 };
@@ -198,7 +231,7 @@ const logoutHandler: aws.lambda.EventHandler<APIGatewayProxyEvent, APIGatewayPro
 };
 
 export const authApi = {
-  login: loginHandler,
-  callback: callbackHandler,
+  callback: tokenHandler,
+  me: meHandler,
   logout: logoutHandler,
 };

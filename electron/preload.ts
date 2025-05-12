@@ -16,6 +16,7 @@ const validInvokeChannels = [
     // Auth
     'auth:login', 'auth:logout', 'auth:check-status', 'auth:get-status', 'auth:get-user-id',
     'sync:get-auth-cookie', // Seems auth related
+    'sync:set-online-status',
     // Chat (Request/Response style)
     'chat:send-user-message', // Triggers the stream flow
     'chat:get-messages'      // Gets history

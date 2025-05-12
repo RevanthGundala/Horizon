@@ -18,15 +18,7 @@ export function setupAuthIpcHandlers(): void {
 
   // --- Initiate OAuth flow (Renamed from auth:initiate for clarity) ---
   ipcMain.handle('auth:login', async () => {
-    console.log('[IPC Recv] auth:login');
-    try {
-        await auth.initiateOAuth(); // No return value needed here
-        console.log('[IPC Send] auth:login - Success');
-        return { success: true };
-    } catch (error) {
-         console.error('[IPC Error] auth:login - Failed:', error);
-         return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-    }
+    await auth.initiateOAuth(); // No return value needed here
   });
 
   // --- Logout ---
@@ -53,6 +45,14 @@ export function setupAuthIpcHandlers(): void {
     };
     console.log('[IPC Send] auth:get-status - Status:', { auth: status.isAuthenticated, loading: status.isLoading, userId: status.user?.id });
     return status;
+  });
+
+  // --- Check Auth Status (alias for auth:get-status) ---
+  ipcMain.handle('auth:check-status', async (): Promise<boolean> => {
+    console.log('[IPC Recv] auth:check-status');
+    const result = await auth.checkAuthStatus();
+    console.log('[IPC Send] auth:check-status -', result);
+    return result;
   });
 
   // --- Get User ID (needed for onboarding/workspaces) ---

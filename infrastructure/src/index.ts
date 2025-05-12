@@ -7,7 +7,6 @@ import * as aws from "@pulumi/aws";
 import * as awsx from "@pulumi/awsx";
 import * as path from "path";
 import { syncApi } from "./api/lambdas/sync";
-import { userApi } from "./api/lambdas/user";
 import { authApi } from "./api/lambdas/auth";
 import { statusApi } from "./api/lambdas/status";
 
@@ -111,17 +110,9 @@ const api = new awsx.classic.apigateway.API("horizon-api", {
     },
     // Authentication endpoints (standard request/response)
     {
-      path: "/api/auth/login",
-      method: "GET",
-      eventHandler: new aws.lambda.CallbackFunction("login-handler", {
-        callback: authApi.login,
-        environment: commonEnv,
-      }),
-    },
-    {
-      path: "/api/auth/callback",
-      method: "GET",
-      eventHandler: new aws.lambda.CallbackFunction("callback-handler", {
+      path: "/api/auth/token",
+      method: "POST",
+      eventHandler: new aws.lambda.CallbackFunction("token-callback-handler", {
         callback: authApi.callback,
         environment: commonEnv,
       }),
@@ -136,10 +127,10 @@ const api = new awsx.classic.apigateway.API("horizon-api", {
     },
     // User endpoint (uses /me path - CORRECTED)
     {
-      path: "/api/users/me",
+      path: "/api/auth/me",
       method: "GET",
       eventHandler: new aws.lambda.CallbackFunction("get-current-user-handler", { // Renamed
-        callback: userApi.user, // Assumes this uses withAuth
+        callback: authApi.me, // Assumes this uses withAuth
         environment: commonEnv,
       }),
     },
@@ -219,8 +210,8 @@ const distribution = new aws.cloudfront.Distribution("horizon-cf", {
   defaultCacheBehavior: {
     targetOriginId: "api-gw",
     viewerProtocolPolicy: "redirect-to-https",
-    allowedMethods: ["GET", "HEAD", "OPTIONS"],
-    cachedMethods:  ["GET", "HEAD"],
+    allowedMethods: allMethods,
+    cachedMethods:  allCachedMethods,
     cachePolicyId: cachingDisabledPolicyId.id!.apply(id => {
       if (!id) throw new Error("Managed-CachingDisabled policy not found");
       return id;

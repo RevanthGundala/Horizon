@@ -1,9 +1,8 @@
 import { APIGatewayProxyEvent, Context } from "aws-lambda";
-import { parseCookies, isAuthSuccess } from "../utils/middleware";
 import { streamText } from "ai";
 import { openai } from "@ai-sdk/openai";
-import { WorkOS } from "@workos-inc/node";
 import { searchTool, ragSearchTool } from "../tools";
+import { getUserId } from "../utils/helpers";
 
 // Define your handler as a separate function first
 const streamingChatHandlerInternal = async (
@@ -11,52 +10,13 @@ const streamingChatHandlerInternal = async (
   responseStream: any, 
   context: Context
 ) => {
-  let user;
-  console.log("[Streaming Chat] Function Invoked.");
-  console.log("[Streaming Chat] Incoming Headers:", JSON.stringify(event.headers || {}, null, 2)); // Log ALL headers
 
-  // --- Authentication ---
-  try {
-    console.log("[Streaming Chat] Attempting authentication...");
-    const cookies = parseCookies(event.headers.cookie || event.headers.Cookie);
-    const sessionData = cookies["wos-session"];
-
-    if (!sessionData) {
-     console.log("Error: No session cookie found");
-      responseStream.end();
-      return;
-    }
-
-    const workos = new WorkOS(process.env.WORKOS_API_KEY!, { clientId: process.env.WORKOS_CLIENT_ID! });
-    const session = workos.userManagement.loadSealedSession({
-      sessionData,
-      cookiePassword: process.env.WORKOS_COOKIE_PASSWORD!,
-    });
-    const authResult = await session.authenticate();
-
-    console.log("[Streaming Chat] Raw WorkOS authResult:", JSON.stringify(authResult, null, 2));
-
-    if (!isAuthSuccess(authResult)) {
-      console.log("Error: Authentication failed");
-      responseStream.end();
-      return;
-    }
-    
-    if ('user' in authResult) {
-      user = authResult.user;
-      console.log(`[Streaming Chat] User authenticated: ${user.id}`);
-    } else {
-      console.log("Error: Invalid authentication response");
-      responseStream.end();
-      return;
-    }
-  } catch (authError: any) {
-    console.error("[Streaming Chat] Auth Error:", authError.message);
-    console.log(`Authentication error: ${authError.message}`);
+  const userId = await getUserId(event.headers.authorization || "");
+  if (!userId) {
+    console.error("Unauthorized: Invalid token");
     responseStream.end();
     return;
   }
-
   // Set response content type
   responseStream.setContentType("text/plain");
 
@@ -107,8 +67,8 @@ const streamingChatHandlerInternal = async (
       messages,
       system: systemPrompt,
       tools: {
-        search: searchTool(user),
-        ragSearch: ragSearchTool(user),
+        search: searchTool({ id: userId }),
+        ragSearch: ragSearchTool({ id: userId }),
       },
       onError: ({ error }) => console.error("[Streaming Chat] AI Stream Error Callback:", error),
       onFinish: (data) => console.log("[Streaming Chat] AI Stream Finished Callback. Reason:", data.finishReason),

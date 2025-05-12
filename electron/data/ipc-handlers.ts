@@ -4,7 +4,7 @@ import DatabaseService, { Block, Note } from './index';
 import { AuthService } from '../auth';
 
 // API URL for server communication
-const API_URL = process.env.VITE_API_URL || 'https://vihy6489c7.execute-api.us-west-2.amazonaws.com/stage';
+const API_URL = process.env.API_URL || '';
 
 // Initialize database service
 const db = DatabaseService.getInstance();

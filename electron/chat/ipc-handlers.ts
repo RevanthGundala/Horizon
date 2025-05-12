@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { AuthService } from '../auth'; // Adjust path
 import { ChatService } from './index'; // Adjust path
 import { getMainWindowWebContents } from '../main';
+import { getAccessToken } from '../utils/helpers';
 
 const authService = AuthService.getInstance();
 const chatService = ChatService.getInstance();
@@ -69,14 +70,18 @@ export function setupChatIpcHandlers(): void {
             timeoutId = setTimeout(() => abortController.abort('timeout'), 30000); // Add reason
     
             console.log(`[IPC chat:send-user-message] Attempting fetch to ${chatUrl}`);
-    
+            const accessToken = getAccessToken();
+            if (!accessToken) {
+                console.error("[IPC chat:send-user-message] Error: Access token not available.");
+                chatService.updateChatMessageStatus(messageId, 'error', 'Access token not available');
+                return { success: false, error: "Access token not available" };
+            }
             // --- Fetch Call ---
             const response = await net.fetch(chatUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
                 body: JSON.stringify({ messages: historyWithoutCurrent }),
                 signal: abortController.signal,
-                credentials: 'include',
             });
             if (timeoutId) { clearTimeout(timeoutId); } // Only clear if assigned
     
